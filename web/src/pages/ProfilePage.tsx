@@ -1,8 +1,11 @@
-import { useMemo } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
 import { toast } from 'sonner'
 import Avatar from '../components/Avatar'
 import { ChevronIcon } from '../components/icons'
+import { saveMyProfile, type MyProfile } from '../lib/api'
+import { useMyProfile } from '../lib/hooks'
+import { INTERESTS, MAJORS } from '../lib/interests'
 import { useDiscovery } from '../session/discovery'
 import { usePresence } from '../session/presence'
 import { useReadySession } from '../session/session'
@@ -22,6 +25,7 @@ function ProfilePage() {
   const { sharing, setSharing } = usePresence()
   const { segments, distanceM, clearTrail, restoreTrail } = useTrails()
   const { areas, discovered, showFog, setShowFog } = useDiscovery()
+  const { data: profile } = useMyProfile()
   const found = areas.filter((id) => discovered.has(id)).length
 
   function clear() {
@@ -37,6 +41,9 @@ function ProfilePage() {
         <h1>{player.display_name}</h1>
         <span className="chip">{isAdmin ? 'Organizer' : 'Player'}</span>
       </div>
+
+      {/* Remounts when the saved profile changes (first load, after saving), so the form starts from it. */}
+      <AboutYou key={JSON.stringify(profile)} playerId={player.id} saved={profile} />
 
       <div className="card explore-card">
         <div className="explore-head">
@@ -89,6 +96,68 @@ function ProfilePage() {
         </button>
       </div>
     </section>
+  )
+}
+
+/** Major and interests, for "For you" event picks. Private to the player. */
+function AboutYou({ playerId, saved }: { playerId: string; saved: MyProfile }) {
+  const [major, setMajor] = useState(saved.major ?? '')
+  const [interests, setInterests] = useState<string[]>(saved.interests)
+  const [busy, setBusy] = useState(false)
+  const dirty = major.trim() !== (saved.major ?? '') || interests.join() !== saved.interests.join()
+
+  const toggle = (id: string) => setInterests((now) => (now.includes(id) ? now.filter((x) => x !== id) : [...now, id]))
+
+  async function save(e: FormEvent) {
+    e.preventDefault()
+    setBusy(true)
+    try {
+      // Stored in the list's order, so the same picks always compare equal.
+      await saveMyProfile(playerId, { major, interests: INTERESTS.map((i) => i.id).filter((id) => interests.includes(id)) })
+      toast.success('Saved', { description: 'Your picks are under “For you” in search.' })
+    } catch (err) {
+      toast.error('Couldn’t save', { description: (err as Error).message })
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form className="card about-card stack" onSubmit={save}>
+      <div className="stack-sm">
+        <strong>About you</strong>
+        <span className="muted footnote">Picks campus events for you, using Penn State Discover’s categories. Only you can see this.</span>
+      </div>
+      <label className="field">
+        Major
+        <input
+          className="input"
+          value={major}
+          onChange={(e) => setMajor(e.target.value)}
+          list="majors"
+          maxLength={80}
+          placeholder="e.g. Computer Science"
+          autoComplete="off"
+        />
+        <datalist id="majors">
+          {MAJORS.map((m) => (
+            <option key={m} value={m} />
+          ))}
+        </datalist>
+      </label>
+      <div className="field" role="group" aria-label="Interests">
+        Interests
+        <div className="interest-chips">
+          {INTERESTS.map((i) => (
+            <button key={i.id} type="button" className="chip interest-chip" aria-pressed={interests.includes(i.id)} onClick={() => toggle(i.id)}>
+              <span aria-hidden>{i.emoji}</span> {i.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <button className="button primary" disabled={!dirty || busy}>
+        {busy ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+      </button>
+    </form>
   )
 }
 

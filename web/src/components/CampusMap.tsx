@@ -17,6 +17,9 @@ const BEARING = -17
 const START_ZOOM = 16
 const FOLLOW_ZOOM = 17
 const NEUTRAL_BUILDING = '#e7e5e4'
+/** A pale Penn State blue for buildings with upcoming campus events. */
+const EVENT_BUILDING = '#c9d6ec'
+const NO_BUILDINGS: ReadonlySet<string> = new Set()
 const PULSE_MS = 900
 
 const [OLD_MAIN_LAT, OLD_MAIN_LNG] = CAMPUS_CENTER
@@ -30,6 +33,8 @@ type Props = {
   buildings: Building[]
   /** Building numbers hosting an active drop: drawn in the accent color with a soft pulse. */
   highlighted: ReadonlySet<string>
+  /** Building numbers hosting an upcoming campus event: a quiet blue tint, no pulse. A highlight wins over a tint. */
+  tinted?: ReadonlySet<string>
   className: string
   interactiveLayerIds?: string[]
   onClick?: (e: MapLayerMouseEvent) => void
@@ -37,7 +42,7 @@ type Props = {
 }
 
 /** Minimal 2.5D campus map: pitched camera, extruded buildings, locked to campus. Shared by players and admins. */
-function CampusMap({ buildings, highlighted, className, interactiveLayerIds, onClick, children }: Props) {
+function CampusMap({ buildings, highlighted, tinted = NO_BUILDINGS, className, interactiveLayerIds, onClick, children }: Props) {
   const bounds = useMemo(() => (buildings.length ? campusBounds(buildings) : null), [buildings])
   const [minZoom, setMinZoom] = useState(12)
   const extruded = useMemo<FeatureCollection>(() => ({ type: 'FeatureCollection', features: withHeights(buildings) }), [buildings])
@@ -52,6 +57,10 @@ function CampusMap({ buildings, highlighted, className, interactiveLayerIds, onC
   )
   const isActive = useMemo<FilterSpecification>(() => ['in', ['get', 'num'], ['literal', [...highlighted]]], [highlighted])
   const notActive = useMemo<FilterSpecification>(() => ['!', isActive as ExpressionSpecification], [isActive])
+  const baseColor = useMemo<ExpressionSpecification>(
+    () => ['case', ['in', ['get', 'num'], ['literal', [...tinted]]], EVENT_BUILDING, NEUTRAL_BUILDING],
+    [tinted],
+  )
 
   return (
     <div className={className}>
@@ -79,7 +88,7 @@ function CampusMap({ buildings, highlighted, className, interactiveLayerIds, onC
             id="buildings-base"
             type="fill-extrusion"
             filter={notActive}
-            paint={{ 'fill-extrusion-color': NEUTRAL_BUILDING, 'fill-extrusion-height': ['get', 'height'], 'fill-extrusion-opacity': 0.9 }}
+            paint={{ 'fill-extrusion-color': baseColor, 'fill-extrusion-height': ['get', 'height'], 'fill-extrusion-opacity': 0.9 }}
           />
           <Layer
             id="buildings-active-glow"

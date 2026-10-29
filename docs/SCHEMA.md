@@ -133,6 +133,35 @@ One per `minigame` drop, created by the first `join_game`. Every kind (`drops.ga
 
 Primary key `(player_id, hex_id)`. Deliberately **no timestamps or coordinates**, so it can't reconstruct where or when anyone walked. RLS: a player reads and inserts only their own rows (`player_id = current_player_id()`). No update or delete for anyone. Not in the Realtime publication.
 
+### `discover_events` (live Penn State Discover listings)
+
+| column | type | notes |
+| --- | --- | --- |
+| `id` | text PK | Discover's event id; a seeded drop points here with `source_id = 'discover:<id>'` |
+| `title`, `organization`, `theme` | text | public listing facts only: no descriptions, organizer contacts, or attendees |
+| `categories` | text[] | |
+| `starts_at`, `ends_at` | timestamptz | |
+| `location` | text | as the organizer typed it |
+| `building` | jsonb | `{ num, name, lat, lng, matched_by }` (`location text`, `coordinates`, or `gemini`); null for online events and ones away from University Park |
+| `cancelled` | boolean | gone from a complete Discover fetch before it ended; cleared if it reappears |
+| `synced_at` | timestamptz | |
+
+Written only by `sync_discover_events`. RLS: signed-in players read every row; nobody writes. Events that ended over 30 days ago are pruned on each sync. Not in the Realtime publication (search reads it per request).
+
+### `player_profiles` (major and interests, private)
+
+`player_id` (PK, references `players`, cascade delete), `major` (null, or 1–80 characters), `interests` (text[], each one of the ids in `web/src/lib/interests.ts`'s `INTERESTS`, enforced by a check constraint; keep the two lists in step), `updated_at`. RLS: a player reads, inserts, and updates **only their own row**; nobody deletes (clear the fields instead); anon has nothing. Nothing else reads it: "For you" matching runs on the phone (`matchEvent`/`forYou`) against `discover_events`' `categories`, `theme`, `benefits`, and title words.
+
+`discover_events.benefits` (text[], added with this table) holds Discover's `benefitNames` ("Free Food", "Free Stuff"); `sync_discover_events` stores it.
+
+### `event_rsvps` (WalkPSU's own "I'm going")
+
+`event_id` (references `discover_events`, cascade delete), `player_id` (references `players`, cascade delete), `created_at`. Primary key `(event_id, player_id)`. RLS: a player reads only their own rows; no direct writes for anyone (`set_going` writes). Others see only counts, through `event_going`, **never who is going**. Discover's own RSVP numbers (`rsvpTotal`) are deliberately not used.
+
+### `discover_locations` (Gemini placement cache)
+
+`location` (PK, lowercased with whitespace collapsed), `building_num` (null: Gemini said it isn't a campus building), `checked_at`. Service role only, so each free-text location costs one Gemini call ever. Players have no privileges on it.
+
 ## Functions
 
 - **`claim_drop(p_drop_id, p_lat?, p_lng?, p_code?) → claims`**. Claims a drop for the caller. It locks the drop row, so if two players tap at once exactly one wins. Proof is either the drop's QR `p_code` (any distance) or a GPS position within `claim_radius_m()`. It raises an error with a user-facing message when:
@@ -165,6 +194,10 @@ Primary key `(player_id, hex_id)`. Deliberately **no timestamps or coordinates**
   - `create_meetup(p_text, p_lat, p_lng, p_minutes = 60, p_building_num?) → drops`. Any joined player. Inserts a `meetup` drop titled with the trimmed text (3–80 characters), subtitle "Started by <name>", at the given position (must be within 5 km of Old Main), expiring after `p_minutes` clamped to 15–180. Posting again expires the player's previous live meetup, and a player can post at most 5 an hour. `points` is 1 only to satisfy the column check: `claim_drop` refuses meetups. Client: `createMeetup(...)`.
   - `close_drop(p_drop_id)`. Admins may clear any drop; a player may end a meetup they started. Sets `status = 'expired'` (and `expires_at` to now), never deletes, so claims and points from the drop stay. Client: `closeDrop(dropId)`.
 - **`discover_area(p_hex_id) → boolean`**. Records an area for the caller; `true` if new, `false` if they already had it (duplicates are ignored). Runs as the caller (`security invoker`), so the insert policy applies. The client calls it from `DiscoveryProvider` only on a GPS fix with accuracy ≤ 20 m inside one of the campus areas. Client: `discoverArea(hexId)`, `getDiscoveredAreas()`.
+- **Event RSVPs:**
+  - `event_going(p_event_ids text[]) → (event_id, going, me)[]`. Each listed event's going count and whether the caller is going (first 100 ids; unknown ids are left out). Counts only. Client: `getGoing(eventId)`.
+  - `set_going(p_event_id, p_going) → integer`. Turns the caller's RSVP on or off and returns the new count. Going is refused for an event that's over or cancelled (or unknown, or before joining); un-RSVPing always works. Client: `setGoing(eventId, going)`.
+- **`sync_discover_events(p_events jsonb, p_complete boolean) → { events, cancelled, drops_rescheduled, drops_closed }`**. **Service role only**, called by `/api/sync-events`. Upserts every listing in `p_events` (duplicate ids count once; `lat`/`lng` aren't stored). Only when `p_complete` (the fetch got every page) does an upcoming event missing from the batch become `cancelled`, so a truncated fetch never cancels anything. Seeded drops follow their event: an `active` drop gets the event's new `starts_at`/`expires_at`, and a cancelled event's active drop is closed like `close_drop` (`status = 'expired'`, never deleted, so its points stay). A drop that's already closed stays closed.
 - **`claim_radius_m() → meters`** (currently 60). This is the one place the GPS claim radius is defined. `claim_drop` uses it, and the client fetches it (`getClaimRadius()` / `useClaimRadius()`) to draw each drop's radius circle and to enable the Claim button. Change it here and both follow.
 - **`distance_m(lat1, lng1, lat2, lng2) → meters`**. Haversine on a 6,371 km sphere. `web/src/lib/geo.ts` `distanceM` uses the identical formula, so the client's "in range" matches the server.
 - **`next_player_color() → text`**. Default for `players.color`.
@@ -176,16 +209,25 @@ Primary key `(player_id, hex_id)`. Deliberately **no timestamps or coordinates**
 
 ## AI event search: `/api/search-events` and `search_quota`
 
-`POST /api/search-events { query }` (Vercel function, `web/api/search-events.ts`) searches the Penn State Discover snapshot bundled with it (`web/scripts/data/discover-events.json`, refreshed by `npm run import-events`):
+`POST /api/search-events { query }` (Vercel function, `web/api/search-events.ts`) searches Penn State Discover events: the upcoming, uncancelled rows of `discover_events` (read as the caller). Until the first sync fills that table, or if its migration hasn't run (the server logs a reminder once), it searches the snapshot bundled with it instead (`web/scripts/data/discover-events.json`, refreshed by `npm run import-events`):
 
 1. The caller must be a signed-in player (`current_player_id()` under their JWT). The query is 2–200 characters.
 2. `use_search_quota() → boolean` takes one search from the caller's allowance (10 per 10 minutes) and refuses with 429 past it. If the function doesn't exist yet (migration not run, `PGRST202`), the server counts the same allowance in memory per instance and logs a reminder once, so search keeps working. Runs as the caller; `search_quota (player_id, window_start, used)` has RLS with no policies, so only the function touches it. It stores a counter only: **queries are never stored or logged**.
 3. Gemini gets the upcoming events (the soonest 300: id, title, organization, theme and categories, start time, location), the live drops the client sent (`drops: [{ id, title, at? }]`, up to 150; titles and building names only, never coordinates), and the query, wrapped as data. It returns up to 6 event `{ id, reason }` and the `drop_ids` that fit.
-4. Ids are checked against the snapshot and the sent drops (unknown, ended, and duplicate ids are dropped). The response is `{ results: [{ id, title, organization, theme, starts_at, ends_at, location, building | null, reason }], dropIds: string[] }`; `building` is null for online or vaguely located events.
+4. Ids are checked against the event list and the sent drops (unknown, ended, and duplicate ids are dropped). The response is `{ results: [{ id, title, organization, theme, starts_at, ends_at, location, building | null, reason }], dropIds: string[] }`; `building` is null for online or vaguely located events.
 
 5. If Gemini can't answer (402 out of credits, 429/5xx after retries, or a garbled answer), `api/_keywordSearch.ts` ranks events and drops by keywords, synonym groups (food, music, sports, tech, ...), emoji, and time words in State College time, with reasons like "Mentions “pizza”". The response's `mode` is `"ai"` or `"keyword"`, and the sheet labels keyword results.
 
 The app links a result to a seeded drop by `drops.source_id = 'discover:<event id>'`.
+
+## Live event sync: `/api/sync-events`
+
+`POST /api/sync-events` (`web/api/sync-events.ts`, logic in `web/api/_discover.ts`) refreshes `discover_events`. Supabase pg_cron calls it every 30 minutes (setup: `docs/SETUP.md`) with `Authorization: Bearer <DISCOVER_SYNC_SECRET>`; any other caller gets 401. `npm run sync-events` runs the same sync from a terminal.
+
+1. Fetches Discover's public event search (approved, not yet ended; 100 per page, up to 5 pages). More than 5 pages makes the sync `complete: false`.
+2. Keeps public listings and places each at a building: a building named in the location text, else the organizer's pin, never anything over 4 km from Old Main.
+3. Leftovers with an in-person location (not Zoom, Teams, online, links...) are looked up in `discover_locations`. New ones (up to 120 per run) go to Gemini in one call with the buildings within 2.5 km of Old Main. Answers are checked against real building numbers, then cached, "none" included. If Gemini is down or `GEMINI_API_KEY` is unset, the sync goes ahead and asks about those locations next time.
+4. Calls `sync_discover_events(events, complete)` and returns a summary: `{ fetched, complete, placed: { text_or_pin, gemini, unplaced }, gemini, asked, events, cancelled, drops_rescheduled, drops_closed }`. A Discover or database failure returns 502 and is logged.
 
 ## Photo hunts and `/api/verify-photo`
 

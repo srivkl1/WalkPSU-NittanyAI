@@ -45,6 +45,20 @@ export const ClockIcon = (p: IconProps) => (
   </Icon>
 )
 
+export const PeopleIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="9" cy="8.5" r="3.5" />
+    <path d="M2.5 19.5a6.5 6.5 0 0 1 13 0M16 5.2a3.5 3.5 0 0 1 0 6.6M18.5 14a6.5 6.5 0 0 1 3 5.5" />
+  </Icon>
+)
+
+export const InfoIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M12 11v5.5M12 7.5v.01" strokeWidth={2.4} />
+  </Icon>
+)
+
 export const LocateIcon = (p: IconProps) => (
   <Icon {...p} fill="currentColor" stroke="none">
     <path d="M12 2 4.5 20.3l.7.7L12 18l6.8 3 .7-.7z" />

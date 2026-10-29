@@ -1,10 +1,13 @@
+import type { SupabaseClient } from '@supabase/supabase-js'
 import snapshot from '../scripts/data/discover-events.json' with { type: 'json' }
+import type { Database } from '../src/lib/database.types.ts'
 import { keywordSearch } from './_keywordSearch.ts'
 import { GeminiError, HttpError, askGeminiJson, respond, signedInPlayer } from './_shared.ts'
 
-// POST /api/search-events: natural-language search over the Penn State Discover snapshot (npm run import-events)
-// and, in the same Gemini call, over the drops live on the map (the client sends their titles and building names,
-// never coordinates). The ids Gemini returns are checked against the snapshot and the sent drops before use.
+// POST /api/search-events: natural-language search over Penn State Discover events (discover_events, kept fresh by
+// /api/sync-events; the bundled snapshot from npm run import-events until the first sync) and, in the same Gemini
+// call, over the drops live on the map (the client sends their titles and building names, never coordinates). The
+// ids Gemini returns are checked against the events and the sent drops before use.
 // When Gemini can't answer (out of credits, overloaded, garbled), the built-in keyword search (_keywordSearch.ts)
 // answers instead, so search never dead-ends. Queries are never stored or logged, and each player gets a few
 // searches per window (use_search_quota).
@@ -37,12 +40,30 @@ const events = (snapshot as { events: SnapshotEvent[] }).events
 
 const timeFormat = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 
-/** Events that haven't ended, soonest first. */
+/** Snapshot events that haven't ended, soonest first. */
 export function upcoming(now: number) {
   return events
     .filter((e) => Date.parse(e.ends_at) > now)
     .sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at))
     .slice(0, MAX_EVENTS)
+}
+
+let warnedNoSync = false
+
+/** Synced events that haven't ended and weren't cancelled, soonest first; the snapshot before the first sync. */
+async function upcomingEvents(asPlayer: SupabaseClient<Database>, now: number): Promise<SnapshotEvent[]> {
+  const { data, error } = await asPlayer
+    .from('discover_events')
+    .select('id, title, organization, theme, categories, starts_at, ends_at, location, building')
+    .eq('cancelled', false)
+    .gt('ends_at', new Date(now).toISOString())
+    .order('starts_at')
+    .limit(MAX_EVENTS)
+  if (!error && data.length) return data as SnapshotEvent[]
+  // Missing table (migration not run) or never synced: search the snapshot rather than nothing.
+  if (error && !warnedNoSync) console.error(`discover_events unavailable (${error.code ?? error.message}): run supabase/migrations/20261028000000_discover_sync.sql`)
+  if (error) warnedNoSync = true
+  return upcoming(now)
 }
 
 export function POST(request: Request) {
@@ -91,7 +112,7 @@ async function search(request: Request): Promise<{ results: EventResult[]; dropI
   const dropIds = new Set(drops.map((d) => d.id))
 
   const now = Date.now()
-  const list = upcoming(now)
+  const list = await upcomingEvents(asPlayer, now)
   if (list.length === 0 && drops.length === 0) return { results: [], dropIds: [], mode: 'ai' }
   const byId = new Map(list.map((e) => [e.id, e]))
 
@@ -137,7 +158,7 @@ ${drops.map((d) => `${d.id} | ${oneLine(d.title)}${typeof d.at === 'string' ? ` 
     mode = 'keyword'
   }
 
-  // Only ids that are really in the snapshot (and upcoming), each once.
+  // Only ids that are really in the event list (and upcoming), each once.
   const seen = new Set<string>()
   const results: EventResult[] = []
   for (const match of answer.matches ?? []) {

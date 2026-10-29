@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
-import { HUNT_SPOT, MOCK_PORT, NEEDLE_SPOT, OLD_MAIN_LAWN, startMockSupabase } from '../mock/supabase.mjs'
+import { HUNT_SPOT, MOCK_PORT, NEEDLE_SPOT, OLD_MAIN_LAWN, SERVICE_ROLE_KEY, startMockSupabase } from '../mock/supabase.mjs'
 
 const WEB_DIR = fileURLToPath(new URL('../../', import.meta.url))
 const PORT = Number(process.env.E2E_PORT ?? 5199)
@@ -380,6 +380,164 @@ async function searchScenario(browser) {
   await page.context().close()
 }
 
+async function campusEventsScenario(browser) {
+  console.log('\n# Campus events on the map (synced Discover events, seeded through the mock’s sync_discover_events)')
+  const hours = (h) => new Date(Date.now() + h * 3600_000).toISOString()
+  const at = (num, name, lat, lng) => ({ num, name, lat, lng, matched_by: 'location text' })
+  const OSMOND = at('0401000', 'Osmond Laboratory (I Thornton)', 40.79846, -77.862438)
+  const WILLARD = at('0012000', 'Willard (Joseph M)', 40.79568, -77.864627)
+  const SACKETT = at('0301000', 'Sackett Building (Robert Lemuel)', 40.794587, -77.86241)
+  const event = (id, title, starts, ends, building, location = building?.name ?? 'Zoom') => ({
+    id, title, organization: 'E2E Club', theme: 'Social', categories: [], starts_at: hours(starts), ends_at: hours(ends), location, lat: null, lng: null, building,
+  })
+  const events = [
+    event('e2e-osmond-1', 'Chemistry Club Social', 2, 4, OSMOND),
+    event('e2e-osmond-2', 'Physics Study Night', 26, 28, OSMOND),
+    event('e2e-willard', 'Debate Society', 5, 7, WILLARD),
+    // Already a seeded drop (the mock's "Lawn Picnic"): it shows as that drop, not as an event pin.
+    event('e2e-linked', 'Lawn Picnic', 1, 3, WILLARD),
+    event('e2e-online', 'Virtual Hangout', 3, 4, null),
+    event('e2e-later', 'Next Month Gala', 24 * 10, 24 * 10 + 3, SACKETT),
+    // A month-long exhibit: never pinned or listed.
+    event('e2e-exhibit', 'Long Exhibit', -24 * 10, 24 * 20, SACKETT),
+  ]
+  const res = await fetch(`${MOCK}/rest/v1/rpc/sync_discover_events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_ROLE_KEY}` },
+    body: JSON.stringify({ p_events: events, p_complete: false }),
+  })
+  check('the mock accepts a sync', res.ok, res.status)
+  // Two of the mock's bots are going to the Chemistry Club Social.
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url')
+  for (const bot of ['bot0', 'bot1']) {
+    await fetch(`${MOCK}/rest/v1/rpc/set_going`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${b64({ alg: 'HS256' })}.${b64({ sub: bot, role: 'authenticated' })}.mock` },
+      body: JSON.stringify({ p_event_id: 'e2e-osmond-1', p_going: true }),
+    })
+  }
+
+  const page = await newPhone(browser, { lat: OLD_MAIN_LAWN.lat, lng: OLD_MAIN_LAWN.lng })
+  await mapReady(page)
+  await page.waitForFunction(() => window.__walkpsuMap.getSource('events')?.serialize().data.features.length > 0, null, { timeout: 10_000 })
+  const pins = await page.evaluate(() =>
+    Object.fromEntries(window.__walkpsuMap.getSource('events').serialize().data.features.map((f) => [f.properties.num, f.properties.color])),
+  )
+  // Social, in EVENT_THEMES' color (src/lib/campus.ts).
+  check('one pin per building, colored by its soonest event’s type', JSON.stringify(pins) === JSON.stringify({ '0401000': '#f59e0b', '0012000': '#f59e0b' }), pins)
+  check('no pin for an online event, a seeded drop’s event, one over a week out, or a month-long exhibit', !pins['0301000'], pins)
+  const tint = await page.evaluate(() => JSON.stringify(window.__walkpsuMap.getPaintProperty('buildings-base', 'fill-extrusion-color')))
+  check('buildings with events are tinted', tint.includes('0401000') && tint.includes('0012000') && !tint.includes('0301000'), tint)
+
+  // From further out, so the tap has to zoom in.
+  await page.evaluate(() => window.__walkpsuMap.jumpTo({ center: [-77.8625, 40.7975], zoom: 15.5 }))
+  await page.waitForTimeout(800)
+  const pt = await page.evaluate(() => {
+    const map = window.__walkpsuMap
+    const f = map.queryRenderedFeatures({ layers: ['event-points'] }).find((x) => x.properties.num === '0401000')
+    if (!f) return null
+    const box = map.getContainer().getBoundingClientRect()
+    const p = map.project(f.geometry.coordinates)
+    return { x: box.left + p.x, y: box.top + p.y }
+  })
+  check('the Osmond pin is drawn', pt !== null)
+  if (pt) await page.mouse.click(pt.x, pt.y)
+  await page.waitForSelector('.event-sheet h3', { timeout: 5000 })
+  await page.waitForTimeout(1200) // the glide
+  const view = await page.evaluate(() => ({
+    card: document.querySelector('.event-sheet').textContent.replace(/\s+/g, ' '),
+    zoom: window.__walkpsuMap.getZoom(),
+    onScreen: (() => {
+      const p = window.__walkpsuMap.project([-77.862438, 40.79846])
+      return p.x > 0 && p.x < 375 && p.y > 0 && p.y < 500
+    })(),
+  }))
+  check('tapping a pin opens the soonest event there', /Chemistry Club Social.*E2E Club.*Osmond Laboratory/.test(view.card), view.card)
+  check('and zooms in to the building', view.zoom >= 16.9 && view.onScreen, view)
+  check('the card lists the building’s other events', /Also here.*Physics Study Night/.test(view.card), view.card)
+
+  // RSVPs: a count (never names) and an I'm going toggle.
+  const going = () => page.evaluate(() => ({ count: document.querySelector('.going-count')?.textContent, button: document.querySelector('.going-button')?.textContent }))
+  await page.waitForFunction(() => /going/.test(document.querySelector('.going-count')?.textContent ?? '') && !document.querySelector('.going-button:disabled'))
+  let g = await going()
+  check('the card shows how many are going', g.count === '2 going' && g.button === 'I’m going', g)
+  check('but never who', !/Bot (Ana|Ben)/.test(view.card), view.card)
+  await page.click('.going-button')
+  await page.waitForFunction(() => /Going ✓/.test(document.querySelector('.going-button')?.textContent ?? '') && !document.querySelector('.going-button:disabled'))
+  g = await going()
+  const rsvps = (await (await fetch(`${MOCK}/__state`)).json()).eventRsvps.filter((r) => r.event_id === 'e2e-osmond-1').length
+  check('tapping I’m going counts me in', g.count === 'You and 2 others going' && rsvps === 3, { g, rsvps })
+  await page.screenshot({ path: SHOTS + 'campus-events.png' })
+  await page.click('.going-button')
+  await page.waitForFunction(() => document.querySelector('.going-button')?.textContent === 'I’m going' && !document.querySelector('.going-button:disabled'))
+  check('tapping again takes it back', (await going()).count === '2 going')
+  await page.click('.event-sheet .search-result:has-text("Physics Study Night")')
+  await page.waitForFunction(() => /Physics Study Night/.test(document.querySelector('.event-sheet h3')?.textContent ?? ''))
+  check('tapping one shows it', /Also here.*Chemistry Club Social/.test((await page.textContent('.event-sheet')).replace(/\s+/g, ' ')))
+  await page.waitForFunction(() => document.querySelector('.going-count')?.textContent === 'Be the first to go')
+  check('with its own count', true)
+
+  await page.click('.search-pill')
+  await page.waitForSelector('.search-sheet .search-result')
+  // A section of the search sheet by its heading: { titles, text }.
+  const sheetSection = (heading) =>
+    page.evaluate((heading) => {
+      const s = [...document.querySelectorAll('.search-sheet section')].find((x) => x.querySelector('h4')?.textContent === heading)
+      return s ? { titles: [...s.querySelectorAll('.search-result-title')].map((t) => t.textContent.trim()), text: s.textContent.replace(/\s+/g, ' ') } : null
+    }, heading)
+  const comingUp = await sheetSection('Coming up on campus')
+  check(
+    'the search sheet lists upcoming events, soonest first, without long exhibits',
+    JSON.stringify(comingUp?.titles) === JSON.stringify(['Lawn Picnic', 'Chemistry Club Social', 'Virtual Hangout', 'Debate Society', 'Physics Study Night', 'Next Month Gala']),
+    comingUp,
+  )
+  check('a listed event that is a drop says it’s claimable', /Lawn Picnic.*Claimable · 15 pts/.test(comingUp?.text ?? ''))
+  check('with no profile yet, it offers picks instead of a For you list', !!(await page.$('.search-sheet .for-you-nudge')) && (await sheetSection('For you')) === null)
+  await page.screenshot({ path: SHOTS + 'coming-up.png' })
+
+  // Profile, through the nudge: a major and interests, saved privately.
+  await page.click('.search-sheet .for-you-nudge')
+  await page.waitForSelector('.about-card .interest-chip')
+  check('the nudge opens Profile', new URL(page.url()).pathname === '/profile')
+  await page.fill('.about-card input', 'Chemistry')
+  await page.click('.about-card .interest-chip:has-text("Social")')
+  await page.click('.about-card .interest-chip:has-text("Sports")')
+  const pressed = () => page.$$eval('.about-card .interest-chip[aria-pressed="true"]', (els) => els.map((e) => e.textContent.trim()))
+  check('interest chips toggle on', JSON.stringify(await pressed()) === '["🏀 Sports","🎉 Social"]', await pressed())
+  await page.click('.about-card .interest-chip:has-text("Sports")')
+  check('and off', JSON.stringify(await pressed()) === '["🎉 Social"]', await pressed())
+  await page.click('.about-card button.primary')
+  await page.waitForFunction(() => document.querySelector('.about-card button.primary')?.textContent === 'Saved')
+  const profiles = (await (await fetch(`${MOCK}/__state`)).json()).profiles
+  check('the profile is saved', profiles.length === 1 && profiles[0].major === 'Chemistry' && JSON.stringify(profiles[0].interests) === '["social"]', profiles)
+  await page.screenshot({ path: SHOTS + 'profile.png', fullPage: true })
+
+  await page.click('.bottom-nav a[href="/"]')
+  await mapReady(page)
+  await page.click('.search-pill')
+  await page.waitForSelector('.search-sheet .search-result')
+  const picks = await sheetSection('For you')
+  check('For you puts the best match first: Social plus the Chemistry major', picks?.titles[0] === 'Chemistry Club Social' && /Chemistry Club Social.*For you: Social, Chemistry/.test(picks.text), picks)
+  check('at most 5 picks, each a match', picks?.titles.length === 5 && !picks.titles.includes('Long Exhibit'), picks)
+  check('the nudge is gone', !(await page.$('.search-sheet .for-you-nudge')))
+  await page.screenshot({ path: SHOTS + 'for-you.png' })
+  await page.click('.search-sheet section:has(h4:text-is("For you")) .search-result:has-text("Chemistry Club Social")')
+  await page.waitForSelector('.event-sheet .for-you-chip')
+  check('the event card says why it’s for you', (await page.textContent('.event-sheet .for-you-chip')) === '★ For you · Social, Chemistry', await page.textContent('.event-sheet .for-you-chip'))
+
+  await page.click('.map-info')
+  await page.waitForSelector('.map-key-sheet .map-key-row')
+  const key = await page.$$eval('.map-key-sheet .map-key-row', (rows) => rows.map((r) => r.textContent.replace(/\s+/g, ' ').trim()))
+  check('the ⓘ opens a map key: every event type, the drops, and the building colors', key.length === 9 + 5 + 2 && /^Social/.test(key[0]) && key.some((r) => /^Meetup/.test(r)) && key.some((r) => /^Light blue/.test(r)), key)
+  const cardClosed = await page
+    .waitForFunction(() => !document.querySelector('.event-sheet[data-state="open"]'), null, { timeout: 3000 })
+    .then(() => true, () => false)
+  check('and closes the event card it would cover', cardClosed)
+  await page.screenshot({ path: SHOTS + 'map-key.png' })
+  check('no console errors', page.errors.length === 0, page.errors)
+  await page.context().close()
+}
+
 async function meetupScenario(browser) {
   console.log('\n# Meetups and clearing drops (runs last: it clears the revealed photo hunt)')
   const page = await newPhone(browser, { lat: OLD_MAIN_LAWN.lat - 40 / M_PER_DEG_LAT, lng: OLD_MAIN_LAWN.lng })
@@ -682,6 +840,7 @@ try {
   await needleRainScenario(browser)
   await landmarkScenario(browser)
   await searchScenario(browser)
+  await campusEventsScenario(browser)
   await meetupScenario(browser)
 } catch (e) {
   failures++

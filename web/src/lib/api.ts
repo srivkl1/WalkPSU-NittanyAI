@@ -1,6 +1,6 @@
 import type { PostgrestSingleResponse } from '@supabase/supabase-js'
 import { getAccessToken, supabase } from './supabase'
-import type { Database, DropRow, NewDrop, PlayerRow } from './database.types'
+import type { Database, DropRow, NewDrop, PlayerProfile, PlayerRow } from './database.types'
 
 function unwrap<T>(response: PostgrestSingleResponse<T>): T {
   if (response.error) throw new Error(response.error.message)
@@ -95,6 +95,79 @@ export type EventResult = {
   building: { num: string; name: string; lat: number; lng: number } | null
   /** Gemini's one-line "why this fits". */
   reason: string
+}
+
+// Discover also lists job postings and month-long exhibits; a browse list is for things you can go to soon.
+const MAX_LISTED_EVENT_MS = 24 * 3600_000
+
+/** An upcoming event with Discover's keywords, for "For you" matching (lib/interests.ts). */
+export type UpcomingEvent = EventResult & { categories: string[]; benefits: string[] }
+
+/** The next synced campus events (discover_events), soonest first, skipping cancelled and multi-day listings. */
+export async function getUpcomingEvents(limit = 20): Promise<UpcomingEvent[]> {
+  const rows = unwrap(
+    await supabase
+      .from('discover_events')
+      // Every column, so a database without the newest one (benefits) still answers.
+      .select('*')
+      .eq('cancelled', false)
+      .gt('ends_at', new Date().toISOString())
+      .order('starts_at')
+      // Long listings started long ago sort first, so read well past `limit` before filtering them out.
+      .limit(500),
+  )
+  return rows
+    .filter((e) => Date.parse(e.ends_at) - Date.parse(e.starts_at) <= MAX_LISTED_EVENT_MS)
+    .slice(0, limit)
+    .map((e) => ({
+      id: e.id,
+      title: e.title,
+      organization: e.organization,
+      theme: e.theme,
+      starts_at: e.starts_at,
+      ends_at: e.ends_at,
+      location: e.location,
+      building: e.building && { num: e.building.num, name: e.building.name, lat: e.building.lat, lng: e.building.lng },
+      reason: '',
+      categories: e.categories ?? [],
+      benefits: e.benefits ?? [],
+    }))
+}
+
+export type MyProfile = Pick<PlayerProfile, 'major' | 'interests'>
+const profileListeners = new Set<() => void>()
+
+/** My major and interests (empty until saved). Private to me. */
+export async function getMyProfile(): Promise<MyProfile> {
+  const row = unwrap(await supabase.from('player_profiles').select('major, interests').maybeSingle())
+  return row ?? { major: null, interests: [] }
+}
+
+export async function saveMyProfile(playerId: string, profile: MyProfile) {
+  const major = profile.major?.trim() || null
+  unwrap(await supabase.from('player_profiles').upsert({ player_id: playerId, major, interests: profile.interests }).select().single())
+  for (const notify of profileListeners) notify()
+}
+
+/** Calls `onChange` after I save my profile (so "For you" updates at once). */
+export function subscribeToProfile(onChange: () => void) {
+  profileListeners.add(onChange)
+  return () => {
+    profileListeners.delete(onChange)
+  }
+}
+
+export type Going = { going: number; me: boolean }
+
+/** How many players are going to an event, and whether I am. */
+export async function getGoing(eventId: string): Promise<Going> {
+  const row = unwrap(await supabase.rpc('event_going', { p_event_ids: [eventId] }))[0]
+  return row ? { going: row.going, me: row.me } : { going: 0, me: false }
+}
+
+/** RSVPs me on or off. Returns the event's new going count. */
+export async function setGoing(eventId: string, going: boolean) {
+  return unwrap(await supabase.rpc('set_going', { p_event_id: eventId, p_going: going }))
 }
 
 /** A live drop as search sees it: only what the map already shows, never its coordinates. */

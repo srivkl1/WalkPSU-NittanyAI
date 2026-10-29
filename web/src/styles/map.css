@@ -609,6 +609,129 @@
   letter-spacing: -0.018em;
 }
 
+/* An event card's "12 going" and its I'm going toggle. */
+.going {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.going-count {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.going-count svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+/* Not the card's full-width button (.drop-card .button): it shares a row with the count. */
+.drop-card .going-button {
+  flex: none;
+  width: auto;
+  min-height: 44px;
+  padding: 0 18px;
+}
+
+.drop-card .going-button[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--success, #16a34a) 14%, transparent);
+  color: var(--success, #16a34a);
+}
+
+/* The map key's ⓘ: top left, a row below the status pill (which widens to most of the screen during a search). */
+.map-info {
+  position: absolute;
+  z-index: 5;
+  top: calc(var(--safe-top) + 12px + 44px + 8px + 40px + 8px);
+  left: var(--gutter-l);
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  color: var(--accent);
+  cursor: pointer;
+  transition: transform 160ms var(--ease-out);
+}
+
+.map-info:active {
+  transform: scale(0.92);
+}
+
+.map-key-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 85dvh;
+  padding-bottom: max(20px, var(--safe-bottom));
+}
+
+.map-key-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.map-key-note {
+  margin: 0 4px;
+}
+
+.map-key-table {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Swatch | name | what it means */
+.map-key-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 7.5em) 1fr;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 4px;
+  border-bottom: 0.5px solid var(--material-edge);
+}
+
+.map-key-row:last-child {
+  border-bottom: 0;
+}
+
+/* Drawn like the map's pins: a filled circle with a white ring. */
+.key-pin {
+  justify-self: center;
+  width: 16px;
+  height: 16px;
+  border: 2.5px solid #ffffff;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+}
+
+.key-pin.is-drop {
+  width: 22px;
+  height: 22px;
+  border-width: 3px;
+}
+
+.key-block {
+  justify-self: center;
+  width: 22px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--swatch);
+}
+
 .char-count {
   align-self: flex-end;
   font-variant-numeric: tabular-nums;
@@ -811,6 +934,21 @@
 .search-reason {
   color: var(--accent);
   font-style: italic;
+}
+
+/* "★ For you · Career" on an event's card. */
+.for-you-chip {
+  min-width: 0;
+  overflow: hidden;
+  background: var(--accent-tint);
+  color: var(--accent);
+  text-overflow: ellipsis;
+}
+
+/* "Get picks for you" in the search sheet, before a profile is set. */
+.for-you-nudge {
+  border-radius: var(--radius-card);
+  background: var(--accent-tint);
 }
 
 .claimable-chip {
