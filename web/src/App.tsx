@@ -1,15 +1,14 @@
 import type { CSSProperties } from 'react'
-import { Route, Routes, useLocation } from 'react-router'
+import { Route, Routes } from 'react-router'
 import { Toaster } from 'sonner'
 import BottomNav from './components/BottomNav'
 import DropAlerts from './components/DropAlerts'
-import PassToast from './components/PassToast'
 import AdminPage from './pages/AdminPage'
-import BattlePage from './pages/BattlePage'
 import ClaimPage from './pages/ClaimPage'
-import GamePage from './pages/GamePage'
+import ClubDashboardPage from './pages/ClubDashboardPage'
+import ClubsPage from './pages/ClubsPage'
+import EventCheckinPage from './pages/EventCheckinPage'
 import JoinScreen from './pages/JoinScreen'
-import LeaderboardPage from './pages/LeaderboardPage'
 import MapPage from './pages/MapPage'
 import ProfilePage from './pages/ProfilePage'
 import { DiscoveryProvider } from './session/DiscoveryProvider'
@@ -17,9 +16,6 @@ import { PresenceProvider } from './session/PresenceProvider'
 import { TrailProvider } from './session/TrailProvider'
 import { useSession } from './session/session'
 import { SessionProvider } from './session/SessionProvider'
-
-// Full-screen game views: no bottom nav to mis-tap while shaking or on the projector.
-const FULL_SCREEN = /^\/(game|battle)\//
 
 // Sonner reads these on the toaster; pointing them at our tokens makes toasts match the app.
 const TOAST_THEME = {
@@ -31,29 +27,26 @@ const TOAST_THEME = {
 
 function Screens() {
   const session = useSession()
-  const { pathname } = useLocation()
   if (session.status !== 'ready') return <JoinScreen />
-  const fullScreen = FULL_SCREEN.test(pathname)
 
   return (
     <PresenceProvider>
       <TrailProvider>
         <DiscoveryProvider>
-          <div className="app" data-chrome={fullScreen ? 'none' : 'tabs'}>
+          <div className="app" data-chrome="tabs">
             <main className="app-main">
               <Routes>
                 <Route path="/" element={<MapPage />} />
-                <Route path="/leaderboard" element={<LeaderboardPage />} />
+                <Route path="/clubs" element={<ClubsPage />} />
+                <Route path="/clubs/:organization" element={<ClubDashboardPage />} />
                 <Route path="/profile" element={<ProfilePage />} />
                 <Route path="/admin" element={<AdminPage />} />
                 <Route path="/claim/:dropId" element={<ClaimPage />} />
-                <Route path="/game/:dropId" element={<GamePage />} />
-                <Route path="/battle/:dropId" element={<BattlePage />} />
+                <Route path="/checkin/:eventId" element={<EventCheckinPage />} />
               </Routes>
             </main>
-            {!fullScreen && <BottomNav />}
-            {!fullScreen && <DropAlerts />}
-            <PassToast />
+            <BottomNav />
+            <DropAlerts />
           </div>
         </DiscoveryProvider>
       </TrailProvider>

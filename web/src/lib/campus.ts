@@ -21,8 +21,6 @@ export const EVENT_PIN = '#1e407c'
 export const eventTheme = (theme: string | null) => (theme && EVENT_THEMES[theme]) || { label: theme ?? 'Campus event', color: EVENT_PIN, hint: '' }
 
 export const DROP_TYPES = {
-  minigame: { label: 'Mini-game', color: '#7c3aed' },
-  photo_hunt: { label: 'Photo hunt', color: '#db2777' },
   checkin: { label: 'Check-in', color: '#0891b2' },
   meetup: { label: 'Meetup', color: '#65a30d' },
 } as const
