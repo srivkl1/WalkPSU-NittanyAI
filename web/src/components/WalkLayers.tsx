@@ -1,6 +1,6 @@
 import type { ExpressionSpecification } from 'maplibre-gl'
 import type { FeatureCollection, LineString, MultiLineString } from 'geojson'
-import { useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
 import { Layer, Source, useMap } from 'react-map-gl/maplibre'
 import { hexFeatures } from '../map/hexgrid'
 import { useDiscovery } from '../session/discovery'
@@ -75,22 +75,30 @@ function WalkLayers() {
     [player.color],
   )
   const fogVisibility = showFog ? 'visible' : 'none'
+  // CampusMap's layers and these can reach the map in either order once the style loads; adding the fog "before" a
+  // layer that isn't there yet throws and leaves no fog. Placed by beforeId, the fog lands in the same spot whenever
+  // it mounts, so waiting for its anchor is safe (unlike the trails below, which must mount in JSX order).
+  const anchored = useHasLayer(FOG_BELOW)
 
   return (
     <>
-      <Source id="fog" type="geojson" data={fog}>
-        {/* No antialiasing: neighboring hexes share edges, and AA would draw faint seams between them. */}
-        <Layer
-          id="fog"
-          type="fill"
-          beforeId={FOG_BELOW}
-          layout={{ visibility: fogVisibility }}
-          paint={{ 'fill-color': FOG_COLOR, 'fill-opacity': FOG_OPACITY, 'fill-antialias': false }}
-        />
-      </Source>
-      <Source id="fog-reveal" type="geojson" data={EMPTY}>
-        <Layer id="fog-reveal" type="fill" beforeId={FOG_BELOW} layout={{ visibility: fogVisibility }} paint={{ 'fill-color': FOG_COLOR, 'fill-opacity': 0, 'fill-antialias': false }} />
-      </Source>
+      {anchored && (
+        <>
+          <Source id="fog" type="geojson" data={fog}>
+            {/* No antialiasing: neighboring hexes share edges, and AA would draw faint seams between them. */}
+            <Layer
+              id="fog"
+              type="fill"
+              beforeId={FOG_BELOW}
+              layout={{ visibility: fogVisibility }}
+              paint={{ 'fill-color': FOG_COLOR, 'fill-opacity': FOG_OPACITY, 'fill-antialias': false }}
+            />
+          </Source>
+          <Source id="fog-reveal" type="geojson" data={EMPTY}>
+            <Layer id="fog-reveal" type="fill" beforeId={FOG_BELOW} layout={{ visibility: fogVisibility }} paint={{ 'fill-color': FOG_COLOR, 'fill-opacity': 0, 'fill-antialias': false }} />
+          </Source>
+        </>
+      )}
       <FogReveal hexId={justDiscovered} />
 
       <Source id="tails" type="geojson" data={others}>
@@ -117,13 +125,30 @@ function WalkLayers() {
   )
 }
 
+/** True once the map has layer `id`; re-checked on every style change (adding a layer is one). */
+function useHasLayer(id: string) {
+  const { current: ref } = useMap()
+  const map = ref?.getMap()
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      if (!map) return () => {}
+      map.on('styledata', onChange)
+      return () => {
+        map.off('styledata', onChange)
+      }
+    },
+    [map],
+  )
+  return useSyncExternalStore(subscribe, () => !!map?.getLayer(id))
+}
+
 /** Fades a just-discovered hex's fog out: show it at full fog, then let a paint transition take it to zero. */
 function FogReveal({ hexId }: { hexId: string | null }) {
   const { current: ref } = useMap()
   useEffect(() => {
     const map = ref?.getMap()
     const source = map?.getSource('fog-reveal') as { setData: (data: FeatureCollection) => void } | undefined
-    if (!map || !source || !hexId || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    if (!map || !source || !map.getLayer('fog-reveal') || !hexId || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
     source.setData(hexFeatures([hexId]))
     map.setPaintProperty('fog-reveal', 'fill-opacity-transition', { duration: 0, delay: 0 })
     map.setPaintProperty('fog-reveal', 'fill-opacity', FOG_OPACITY)

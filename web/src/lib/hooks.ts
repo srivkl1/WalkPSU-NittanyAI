@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
-import { getClaimCodes, getClaimRadius, getDrops, getLeaderboard, subscribeToDrops, subscribeToTable } from './api'
+import {
+  getClaimCodes,
+  getClaimRadius,
+  getDrops,
+  getLeaderboard,
+  getMyProfile,
+  getUpcomingEvents,
+  subscribeToDrops,
+  subscribeToProfile,
+  subscribeToTable,
+  type MyProfile,
+  type UpcomingEvent,
+} from './api'
 import { loadBuildings, type Building } from './buildings'
 import type { DropRow, PlayerScoreRow } from './database.types'
 
@@ -27,6 +39,27 @@ const subscribeToClaims: Subscribe = (onChange) => subscribeToTable('claims', on
 export const useDrops = () => useLiveQuery(getDrops, NO_DROPS)
 export const useLeaderboard = () => useLiveQuery(getLeaderboard, NO_SCORES, subscribeToClaims)
 export const useClaimCodes = () => useLiveQuery(getClaimCodes, NO_CODES)
+
+const NO_EVENTS: UpcomingEvent[] = []
+// discover_events changes only when the sync runs (every 30 minutes), so a slow poll is enough; no Realtime.
+const everyFewMinutes: Subscribe = (onChange) => {
+  const timer = setInterval(onChange, 5 * 60_000)
+  return () => clearInterval(timer)
+}
+/** Campus events this far ahead get a map pin. Search still reaches every upcoming event. */
+const MAP_EVENT_WINDOW_MS = 7 * 24 * 3600_000
+const loadMapEvents = async () => {
+  const until = Date.now() + MAP_EVENT_WINDOW_MS
+  return (await getUpcomingEvents(300)).filter((e) => Date.parse(e.starts_at) <= until)
+}
+const NO_PROFILE: MyProfile = { major: null, interests: [] }
+// A missing table (migration not run) reads as an empty profile rather than an error on every screen.
+const loadProfile = () => getMyProfile().catch(() => NO_PROFILE)
+/** My major and interests; refreshes when I save them. */
+export const useMyProfile = () => useLiveQuery(loadProfile, NO_PROFILE, subscribeToProfile)
+
+/** Campus events (Penn State Discover) starting within a week, soonest first, for the map. */
+export const useUpcomingEvents = () => useLiveQuery(loadMapEvents, NO_EVENTS, everyFewMinutes)
 
 let claimRadiusPromise: Promise<number> | null = null
 

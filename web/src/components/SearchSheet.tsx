@@ -1,9 +1,12 @@
-import { useState, type CSSProperties, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
+import { Link } from 'react-router'
 import { Drawer } from 'vaul'
-import { searchEvents, type EventResult, type SearchAnswer, type SearchableDrop } from '../lib/api'
+import { getUpcomingEvents, searchEvents, type EventResult, type SearchAnswer, type SearchableDrop, type UpcomingEvent } from '../lib/api'
 import { DROP_TYPES } from '../lib/campus'
 import type { DropRow } from '../lib/database.types'
 import { eventTime } from '../lib/eventTime'
+import { useMyProfile } from '../lib/hooks'
+import { forYou, hasProfile } from '../lib/interests'
 import { ChevronIcon, SearchIcon } from './icons'
 
 const EXAMPLES = ['free food', 'something for CS majors', 'music tonight']
@@ -16,6 +19,9 @@ const CATEGORIES = [
   { label: 'Games', emoji: '🎮' },
 ]
 const MAX_QUERY = 200
+/** Events loaded for "For you" to choose from, and how many of the soonest "Coming up" lists. */
+const MAX_UPCOMING = 300
+const MAX_COMING_UP = 20
 
 type Props = {
   open: boolean
@@ -40,6 +46,26 @@ type Status = { kind: 'idle' } | { kind: 'searching' } | ({ kind: 'done' } & Sea
 function SearchSheet({ open, onOpenChange, drops, dropById, dropFor, onMatched, onPick, onPickDrop }: Props) {
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
+  // The next campus events, to browse before searching. Refreshed each time the sheet opens (the sync runs every
+  // 30 minutes); a failed load just leaves the list out.
+  const [upcoming, setUpcoming] = useState<UpcomingEvent[]>([])
+  const { data: profile } = useMyProfile()
+  // Picked from everything upcoming, not just the soonest few; each says why.
+  const picks = useMemo(
+    () => forYou(upcoming, profile).map(({ match, ...e }) => ({ ...e, reason: `For you: ${match.reasons.join(', ')}` })),
+    [upcoming, profile],
+  )
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    getUpcomingEvents(MAX_UPCOMING)
+      .then((events) => !cancelled && setUpcoming(events))
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [open])
 
   async function run(text: string) {
     const q = text.trim()
@@ -79,7 +105,11 @@ function SearchSheet({ open, onOpenChange, drops, dropById, dropFor, onMatched, 
               className="search-input"
               type="search"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value)
+                // Clearing the field (or its ✕) goes back to the suggestions and the upcoming list.
+                if (!e.target.value && status.kind !== 'searching') setStatus({ kind: 'idle' })
+              }}
               maxLength={MAX_QUERY}
               placeholder="Find events you’d like…"
               enterKeyHint="search"
@@ -103,6 +133,39 @@ function SearchSheet({ open, onOpenChange, drops, dropById, dropFor, onMatched, 
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+
+          {status.kind === 'idle' && upcoming.length > 0 && (
+            <div className="search-results">
+              {hasProfile(profile) ? (
+                picks.length > 0 && (
+                  <section className="stack-sm">
+                    <h4 className="search-section">For you</h4>
+                    <ul className="list">
+                      {picks.map((event) => (
+                        <EventRow key={event.id} result={event} drop={dropFor(event.id)} onPick={onPick} />
+                      ))}
+                    </ul>
+                  </section>
+                )
+              ) : (
+                <Link className="list-row for-you-nudge" to="/profile">
+                  <span className="list-row-main">
+                    <strong>Get picks for you</strong>
+                    <span className="muted footnote">Add your major and interests in Profile.</span>
+                  </span>
+                  <ChevronIcon className="chevron" />
+                </Link>
+              )}
+              <section className="stack-sm">
+                <h4 className="search-section">Coming up on campus</h4>
+                <ul className="list">
+                  {upcoming.slice(0, MAX_COMING_UP).map((event) => (
+                    <EventRow key={event.id} result={event} drop={dropFor(event.id)} onPick={onPick} />
+                  ))}
+                </ul>
+              </section>
             </div>
           )}
 
@@ -160,25 +223,9 @@ function SearchSheet({ open, onOpenChange, drops, dropById, dropFor, onMatched, 
                   <section className="stack-sm">
                     <h4 className="search-section">Campus events</h4>
                     <ul className="list">
-                      {events.map((result) => {
-                        const drop = dropFor(result.id)
-                        return (
-                          <li key={result.id}>
-                            <button type="button" className="list-row search-result" onClick={() => onPick(result, drop)}>
-                              <span className="list-row-main">
-                                <strong className="search-result-title">{result.title}</strong>
-                                {result.organization && <span className="muted footnote truncate">{result.organization}</span>}
-                                <span className="footnote search-result-meta">
-                                  {eventTime(result.starts_at, result.ends_at)} · {result.building?.name ?? result.location ?? 'Location TBA'}
-                                </span>
-                                {result.reason && <span className="search-reason footnote">{result.reason}</span>}
-                                {drop && <span className="chip claimable-chip">Claimable · {drop.points} pts</span>}
-                              </span>
-                              <ChevronIcon className="chevron" />
-                            </button>
-                          </li>
-                        )
-                      })}
+                      {events.map((result) => (
+                        <EventRow key={result.id} result={result} drop={dropFor(result.id)} onPick={onPick} />
+                      ))}
                     </ul>
                   </section>
                 )}
@@ -187,6 +234,26 @@ function SearchSheet({ open, onOpenChange, drops, dropById, dropFor, onMatched, 
         </Drawer.Content>
       </Drawer.Portal>
     </Drawer.Root>
+  )
+}
+
+/** A campus event: a search result (with Gemini's reason) or an upcoming one. */
+function EventRow({ result, drop, onPick }: { result: EventResult; drop: DropRow | undefined; onPick: Props['onPick'] }) {
+  return (
+    <li>
+      <button type="button" className="list-row search-result" onClick={() => onPick(result, drop)}>
+        <span className="list-row-main">
+          <strong className="search-result-title">{result.title}</strong>
+          {result.organization && <span className="muted footnote truncate">{result.organization}</span>}
+          <span className="footnote search-result-meta">
+            {eventTime(result.starts_at, result.ends_at)} · {result.building?.name ?? result.location ?? 'Location TBA'}
+          </span>
+          {result.reason && <span className="search-reason footnote">{result.reason}</span>}
+          {drop && <span className="chip claimable-chip">Claimable · {drop.points} pts</span>}
+        </span>
+        <ChevronIcon className="chevron" />
+      </button>
+    </li>
   )
 }
 

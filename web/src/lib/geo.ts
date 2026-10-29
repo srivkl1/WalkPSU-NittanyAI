@@ -1,4 +1,5 @@
-import type { Building } from './buildings'
+// With the extension: api/_discover.ts imports this file, and api/ is typechecked with Node's module resolution.
+import type { Building } from './buildings.ts'
 
 const EARTH_RADIUS_M = 6371000
 const rad = (deg: number) => (deg * Math.PI) / 180

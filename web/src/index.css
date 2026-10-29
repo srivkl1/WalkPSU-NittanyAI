@@ -914,6 +914,35 @@ a.list-row:active {
 
 /* Profile: exploration */
 
+/* About you: interest toggles, 44 px tall to tap. */
+.interest-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.interest-chip {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1.5px solid transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 160ms var(--ease-out), background-color 160ms;
+}
+
+.interest-chip:active {
+  transform: scale(0.96);
+}
+
+.interest-chip[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
 .explore-card {
   display: flex;
   flex-direction: column;

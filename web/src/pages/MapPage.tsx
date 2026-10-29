@@ -5,17 +5,18 @@ import Avatar from '../components/Avatar'
 import CampusMap from '../components/CampusMap'
 import DropSheet from '../components/DropSheet'
 import EventSheet from '../components/EventSheet'
-import { CrossIcon, PlusIcon, SearchIcon } from '../components/icons'
+import { CrossIcon, InfoIcon, PlusIcon, SearchIcon } from '../components/icons'
+import MapKeySheet from '../components/MapKeySheet'
 import MeetupSheet from '../components/MeetupSheet'
 import FoundOverlay, { type Found } from '../components/FoundOverlay'
 import PlayerSprite from '../components/PlayerSprite'
 import SearchSheet from '../components/SearchSheet'
 import WalkLayers from '../components/WalkLayers'
 import type { EventResult } from '../lib/api'
-import { DROP_TYPES } from '../lib/campus'
+import { DROP_TYPES, eventTheme } from '../lib/campus'
 import type { DropRow } from '../lib/database.types'
 import { distanceM } from '../lib/geo'
-import { useBuildings, useClaimRadius, useDrops } from '../lib/hooks'
+import { useBuildings, useClaimRadius, useDrops, useUpcomingEvents } from '../lib/hooks'
 import { LABEL_FONT } from '../map/basemap'
 import { circlePolygon } from '../map/geometry'
 import { usePresence, type LivePlayer } from '../session/presence'
@@ -52,11 +53,16 @@ function FlyTo({ target }: { target: { lng: number; lat: number } | null }) {
   return null
 }
 /** Layers whose features open a drop's sheet. Pins come first so they win over the circle underneath. */
-const TAPPABLE = ['drop-points', 'hunt-centers', 'hunt-areas']
+const DROP_LAYERS = ['drop-points', 'hunt-centers', 'hunt-areas']
+/** Tappable layers, drops first: a drop pin wins over an event pin it overlaps. */
+const TAPPABLE = [...DROP_LAYERS, 'event-points']
+/** "Also here" in an event's card: enough to show a building is busy without burying the map. */
+const MAX_ALSO_HERE = 5
 const pinColor = (d: DropRow) => (d.type === 'photo_hunt' ? REVEALED : DROP_TYPES[d.type].color)
 
 function MapPage() {
   const { data: drops, error, refresh: refreshDrops } = useDrops()
+  const { data: upcoming } = useUpcomingEvents()
   const buildings = useBuildings()
   const radius = useClaimRadius()
   const { position, others } = usePresence()
@@ -67,6 +73,7 @@ function MapPage() {
   const [found, setFound] = useState<Found | null>(null)
   const [composing, setComposing] = useState(false)
   const [searching, setSearching] = useState(false)
+  const [showingKey, setShowingKey] = useState(false)
   // A searched event's card; like `sheet`, it keeps its event while sliding away.
   const [event, setEvent] = useState<{ event: EventResult; open: boolean } | null>(null)
   const [flyTarget, setFlyTarget] = useState<{ lng: number; lat: number } | null>(null)
@@ -133,6 +140,29 @@ function MapPage() {
     }),
     [shown],
   )
+  // Campus events in the next week (useUpcomingEvents), by building. An event that is also a seeded drop shows as that drop instead.
+  const eventsByBuilding = useMemo(() => {
+    const seeded = new Set(drops.flatMap((d) => (d.source_id?.startsWith('discover:') ? [d.source_id.slice('discover:'.length)] : [])))
+    const byNum = new Map<string, EventResult[]>()
+    for (const e of upcoming) {
+      if (!e.building || seeded.has(e.id)) continue
+      byNum.set(e.building.num, [...(byNum.get(e.building.num) ?? []), e])
+    }
+    return byNum
+  }, [upcoming, drops])
+  const eventBuildings = useMemo(() => new Set(eventsByBuilding.keys()), [eventsByBuilding])
+  // One pin per building, in the color of its soonest event's type.
+  const eventPoints = useMemo<FeatureCollection<Point>>(
+    () => ({
+      type: 'FeatureCollection',
+      features: [...eventsByBuilding].map(([num, events]) => ({
+        type: 'Feature',
+        properties: { num, color: eventTheme(events[0].theme).color },
+        geometry: { type: 'Point', coordinates: [events[0].building!.lng, events[0].building!.lat] },
+      })),
+    }),
+    [eventsByBuilding],
+  )
   // Everyone on the map as sprites; me last so my sprite draws on top.
   const sprites = useMemo<LivePlayer[]>(
     () => [
@@ -177,9 +207,15 @@ function MapPage() {
     const hit = e.features?.[0]
     const id = hit?.properties?.id as string | undefined
     // An unfound photo hunt is tapped through its "?" pin or its search circle; its lat/lng is that circle's center.
-    const drop = hit && TAPPABLE.includes(hit.layer.id) ? drops.find((d) => d.id === id) : undefined
+    const drop = hit && DROP_LAYERS.includes(hit.layer.id) ? drops.find((d) => d.id === id) : undefined
+    const events = hit?.layer.id === 'event-points' ? eventsByBuilding.get(hit.properties?.num as string) : undefined
     closeEvent()
-    if (drop) {
+    if (events?.length) {
+      closeSheet()
+      setSelectedPlayerId(null)
+      setEvent({ event: events[0], open: true })
+      glideTo(e.target, events[0].building!.lng, events[0].building!.lat)
+    } else if (drop) {
       setSelectedPlayerId(null)
       setSheet({ drop, open: true })
       glideTo(e.target, drop.lng, drop.lat)
@@ -196,10 +232,18 @@ function MapPage() {
 
   return (
     <div className="map-wrap">
-      <CampusMap buildings={buildings} highlighted={highlighted} className="map" interactiveLayerIds={TAPPABLE} onClick={onClick}>
+      <CampusMap buildings={buildings} highlighted={highlighted} tinted={eventBuildings} className="map" interactiveLayerIds={TAPPABLE} onClick={onClick}>
         {/* First, so trails draw under drops and claim circles; the fog places itself under the building glow. */}
         <WalkLayers />
         <FlyTo target={flyTarget} />
+        {/* Under every drop layer: events are background, drops are the game. */}
+        <Source id="events" type="geojson" data={eventPoints}>
+          <Layer
+            id="event-points"
+            type="circle"
+            paint={{ 'circle-radius': 9, 'circle-color': ['get', 'color'], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2.5 }}
+          />
+        </Source>
         <Source id="hunt-areas" type="geojson" data={huntAreas}>
           <Layer id="hunt-areas" type="fill" paint={{ 'fill-color': DROP_TYPES.photo_hunt.color, 'fill-opacity': 0.14 }} />
           <Layer id="hunt-areas-line" type="line" paint={{ 'line-color': DROP_TYPES.photo_hunt.color, 'line-width': 2.5, 'line-dasharray': [1, 2] }} />
@@ -280,6 +324,20 @@ function MapPage() {
         </span>
         {error && <div className="map-banner glass error">{error}</div>}
       </div>
+      <button
+        type="button"
+        className="glass map-info"
+        aria-label="Map key"
+        onClick={() => {
+          // An open card would show through the key's glass.
+          closeSheet()
+          closeEvent()
+          setShowingKey(true)
+        }}
+      >
+        <InfoIcon size={22} />
+      </button>
+      <MapKeySheet open={showingKey} onOpenChange={setShowingKey} />
       <button type="button" className="map-pill glass meetup-fab" onClick={() => setComposing(true)}>
         <PlusIcon size={18} />
         Meetup
@@ -299,7 +357,13 @@ function MapPage() {
         onPick={pickEvent}
         onPickDrop={pickDrop}
       />
-      <EventSheet event={event?.event ?? null} open={!!event?.open} onClose={closeEvent} />
+      <EventSheet
+        event={event?.event ?? null}
+        open={!!event?.open}
+        onClose={closeEvent}
+        more={(event?.event.building ? (eventsByBuilding.get(event.event.building.num) ?? []) : []).filter((e) => e.id !== event?.event.id).slice(0, MAX_ALSO_HERE)}
+        onSelect={(other) => setEvent({ event: other, open: true })}
+      />
       <MeetupSheet
         open={composing}
         onOpenChange={setComposing}

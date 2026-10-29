@@ -1,6 +1,6 @@
 {
   "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }],
   "functions": {
-    "api/*.ts": { "maxDuration": 30 }
+    "api/*.ts": { "maxDuration": 60, "includeFiles": "public/data/buildings.geojson" }
   }
 }

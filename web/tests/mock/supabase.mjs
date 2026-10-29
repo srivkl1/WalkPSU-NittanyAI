@@ -109,6 +109,10 @@ function seed() {
     claims: [],
     discovered: [],
     searchQuota: new Map(),
+    discoverEvents: [],
+    discoverLocations: [],
+    eventRsvps: [],
+    profiles: [],
     secrets: drops.map((d) => ({ drop_id: d.id, claim_code: `${d.id}-code`, ...(d.type === 'photo_hunt' ? hunt : {}) })),
     games: (() => {
       const games = new Map(['game-drop', 'draw-drop', 'aim-drop', 'needle-drop'].map((id) => [id, newGame(id)]))
@@ -153,7 +157,7 @@ const filterRows = (rows, params) =>
 
 export function startMockSupabase({ port = MOCK_PORT } = {}) {
   const db = seed()
-  const { players, drops, claims, discovered, searchQuota, secrets, games, gamePlayers, results, log } = db
+  const { players, drops, claims, discovered, searchQuota, discoverEvents, discoverLocations, eventRsvps, profiles, secrets, games, gamePlayers, results, log } = db
   const kindOf = (dropId) => drops.find((d) => d.id === dropId)?.game ?? 'shake_off'
   const roundsOf = (dropId) => {
     const g = games.get(dropId)
@@ -261,6 +265,47 @@ export function startMockSupabase({ port = MOCK_PORT } = {}) {
     req.headers.authorization === `Bearer ${SERVICE_ROLE_KEY}` ? fn(json) : [403, { message: 'permission denied for function' }]
 
   const rpc = {
+    // Simplified sync_discover_events: replaces events by id and, on a complete fetch, cancels upcoming ones not sent.
+    // tests/sql/discover-sync.test.mjs covers the real function (drops following their event included).
+    sync_discover_events: serviceOnly(({ p_events, p_complete }) => {
+      const sent = new Set(p_events.map((e) => e.id))
+      let cancelled = 0
+      for (const e of discoverEvents) {
+        if (p_complete && !e.cancelled && !sent.has(e.id) && Date.parse(e.ends_at) > Date.now()) {
+          e.cancelled = true
+          cancelled++
+        }
+      }
+      for (const e of p_events) {
+        const at = discoverEvents.findIndex((x) => x.id === e.id)
+        const next = { ...e, cancelled: false, synced_at: now() }
+        if (at >= 0) discoverEvents[at] = next
+        else discoverEvents.push(next)
+      }
+      return [200, { events: p_events.length, cancelled, drops_rescheduled: 0, drops_closed: 0 }]
+    }),
+    // Counts only, never who (as in 20261028010000_event_rsvps.sql).
+    event_going: ({ p_event_ids }, me) => [
+      200,
+      discoverEvents
+        .filter((e) => p_event_ids.includes(e.id))
+        .map((e) => {
+          const going = eventRsvps.filter((r) => r.event_id === e.id)
+          return { event_id: e.id, going: going.length, me: going.some((r) => r.player_id === me?.id) }
+        }),
+    ],
+    set_going: ({ p_event_id, p_going }, me) => {
+      if (!me) return [400, { message: 'Join the game before RSVPing' }]
+      const event = discoverEvents.find((e) => e.id === p_event_id)
+      if (!event) return [400, { message: 'Event not found' }]
+      const mine = eventRsvps.findIndex((r) => r.event_id === p_event_id && r.player_id === me.id)
+      if (p_going) {
+        if (event.cancelled) return [400, { message: 'This event was cancelled' }]
+        if (Date.parse(event.ends_at) <= Date.now()) return [400, { message: 'This event is over' }]
+        if (mine < 0) eventRsvps.push({ event_id: p_event_id, player_id: me.id, created_at: now() })
+      } else if (mine >= 0) eventRsvps.splice(mine, 1)
+      return [200, eventRsvps.filter((r) => r.event_id === p_event_id).length]
+    },
     claim_radius_m: () => [200, RADIUS_M],
     current_player_id: (json, me) => [200, me?.id ?? null],
     use_search_quota: (json, me) => {
@@ -503,7 +548,7 @@ export function startMockSupabase({ port = MOCK_PORT } = {}) {
     const reply = (rows) => (single ? (rows.length === 1 ? send(200, rows[0]) : send(406, { message: 'expected one row' })) : send(200, rows))
 
     // Test-only introspection, e.g. to read claims or a drop's QR code.
-    if (url.pathname === '/__state') return send(200, { log, players, drops, claims, discovered, secrets, gamePlayers, results, games: [...games.values()] })
+    if (url.pathname === '/__state') return send(200, { log, players, drops, claims, discovered, secrets, gamePlayers, results, games: [...games.values()], discoverEvents, discoverLocations, eventRsvps, profiles })
     if (url.pathname === '/auth/v1/signup') {
       const id = randomUUID()
       const user = { id, aud: 'authenticated', role: 'authenticated', is_anonymous: true, app_metadata: {}, user_metadata: {}, created_at: now() }
@@ -573,6 +618,40 @@ export function startMockSupabase({ port = MOCK_PORT } = {}) {
       drops.push(d)
       secrets.push({ drop_id: d.id, claim_code: randomUUID().replaceAll('-', '') })
       return reply([d])
+    }
+    const service = req.headers.authorization === `Bearer ${SERVICE_ROLE_KEY}`
+    if (path === 'discover_locations') {
+      if (!service) return send(403, { message: 'permission denied for table discover_locations' })
+      if (req.method === 'POST') {
+        for (const row of [json].flat()) {
+          const at = discoverLocations.findIndex((x) => x.location === row.location)
+          if (at >= 0) discoverLocations[at] = row
+          else discoverLocations.push(row)
+        }
+        return send(201, [])
+      }
+      // `location=in.(…)`: the caller only looks up locations it has, so returning every row is equivalent.
+      return reply(discoverLocations)
+    }
+    // player_profiles mirrors its RLS: each player reads and writes only their own row.
+    if (path === 'player_profiles') {
+      if (!me) return send(403, { message: 'permission denied for table player_profiles' })
+      if (req.method === 'POST') {
+        const row = { ...json, player_id: me.id, updated_at: now() }
+        const at = profiles.findIndex((p) => p.player_id === me.id)
+        if (at >= 0) profiles[at] = row
+        else profiles.push(row)
+        return reply([row])
+      }
+      return reply(profiles.filter((p) => p.player_id === me.id))
+    }
+    if (path === 'discover_events') {
+      if (!me && !service) return send(403, { message: 'permission denied for table discover_events' })
+      const after = url.searchParams.get('ends_at')?.replace(/^gt\./, '')
+      const rows = discoverEvents
+        .filter((e) => !e.cancelled && (!after || Date.parse(e.ends_at) > Date.parse(after)))
+        .sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at))
+      return reply(rows.slice(0, Number(url.searchParams.get('limit') ?? rows.length)))
     }
     // discovered_areas mirrors its RLS: each player reads only their own rows.
     const tables = { players, drops, drop_secrets: secrets, player_scores: scores(), discovered_areas: discovered.filter((d) => d.player_id === me?.id) }
