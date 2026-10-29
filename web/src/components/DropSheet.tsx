@@ -1,20 +1,12 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { Link } from 'react-router'
 import { toast } from 'sonner'
 import { Drawer } from 'vaul'
-import GameIcon from '../game/GameIcon'
-import { minigameOf } from '../game/kinds'
-import { useGame } from '../game/useGame'
 import { claimDrop, closeDrop } from '../lib/api'
 import { DROP_TYPES } from '../lib/campus'
 import type { DropRow } from '../lib/database.types'
-import { distanceM } from '../lib/geo'
-import { useLeaderboard } from '../lib/hooks'
-import { usePresence } from '../session/presence'
 import { useReadySession } from '../session/session'
 import { eventTime } from '../lib/eventTime'
 import { ClockIcon, PinIcon } from './icons'
-import PhotoHuntCard from './PhotoHuntCard'
 import { useNonModalSheet } from './useNonModalSheet'
 
 type Props = {
@@ -24,11 +16,9 @@ type Props = {
   radius: number | null
   position: GeolocationPosition | null
   onClose: () => void
-  onClaimed: () => void
+  onCheckedIn: () => void
   /** The drop was cleared from the map (an admin, or the player who started a meetup). */
   onCleared: () => void
-  /** A photo hunt photo was accepted; `points` is what the server awarded. */
-  onFound: (points: number, reason: string) => void
 }
 
 /** A drop's details in a bottom sheet the player can drag away. Non-modal, so the map stays live behind it. */
@@ -45,12 +35,7 @@ function DropSheet({ drop, open, onClose, onCleared, ...card }: Props) {
           onInteractOutside={(e) => e.preventDefault()}
         >
           <Drawer.Handle className="drop-sheet-handle" />
-          {drop &&
-            (drop.type === 'photo_hunt' ? (
-              <PhotoHuntCard drop={drop} position={card.position} onFound={card.onFound} />
-            ) : (
-              <DropCard drop={drop} {...card} />
-            ))}
+          {drop && <DropCard drop={drop} {...card} />}
           {drop && <ClearDrop key={drop.id} drop={drop} onCleared={onCleared} />}
         </Drawer.Content>
       </Drawer.Portal>
@@ -60,21 +45,20 @@ function DropSheet({ drop, open, onClose, onCleared, ...card }: Props) {
 
 type CardProps = Omit<Props, 'drop' | 'open' | 'onClose' | 'onCleared'> & { drop: DropRow }
 
-function DropCard({ drop, distance, radius, position, onClaimed }: CardProps) {
+function DropCard({ drop, distance, radius, position, onCheckedIn }: CardProps) {
   const [busy, setBusy] = useState(false)
   const inRange = radius !== null && distance !== null && distance <= radius
-  const verb = drop.type === 'minigame' ? 'join' : 'claim'
 
-  async function claim() {
+  async function checkIn() {
     if (!position) return
     setBusy(true)
     try {
       await claimDrop(drop.id, { lat: position.coords.latitude, lng: position.coords.longitude })
       navigator.vibrate?.(30)
-      toast.success(`Claimed! +${drop.points} points`, { description: drop.title })
-      onClaimed()
+      toast.success('You’re checked in!', { description: drop.title })
+      onCheckedIn()
     } catch (e) {
-      toast.error('Couldn’t claim', { description: (e as Error).message })
+      toast.error('Couldn’t check in', { description: (e as Error).message })
     } finally {
       setBusy(false)
     }
@@ -84,12 +68,12 @@ function DropCard({ drop, distance, radius, position, onClaimed }: CardProps) {
   const range =
     distance === null
       ? 'Waiting for GPS…'
-      : meetup
-        ? inRange
+      : inRange
+        ? meetup
           ? 'You’re here!'
-          : `${Math.round(distance)} m away`
-        : inRange
-          ? `You’re in range to ${verb}!`
+          : 'You’re here. Check in!'
+        : meetup
+          ? `${Math.round(distance)} m away`
           : `${Math.round(distance)} m away · get within ${radius ?? '…'} m`
 
   return (
@@ -99,7 +83,6 @@ function DropCard({ drop, distance, radius, position, onClaimed }: CardProps) {
           <span className="color-dot" aria-hidden />
           {DROP_TYPES[drop.type].label}
         </span>
-        {!meetup && <span className="points-badge">{drop.points} pts</span>}
       </div>
       <div className="drop-card-title">
         <Drawer.Title asChild>
@@ -114,26 +97,18 @@ function DropCard({ drop, distance, radius, position, onClaimed }: CardProps) {
         </span>
       )}
       {drop.hint_photo_url && <img className="hint-photo" src={drop.hint_photo_url} alt="Hint" />}
-      {drop.type === 'minigame' && <GameLine drop={drop} radius={radius} />}
       <span className="range" data-in={inRange || undefined}>
         <PinIcon size={16} />
         {range}
       </span>
       {meetup ? (
-        <span className="muted footnote">A player started this. No points, just people: go say hi.</span>
-      ) : drop.type === 'minigame' ? (
-        <>
-          <LobbyStatus dropId={drop.id} />
-          <Link className="button primary" to={`/game/${drop.id}`}>
-            Open the lobby
-          </Link>
-        </>
+        <span className="muted footnote">A player started this. Nothing to check in to, just people: go say hi.</span>
       ) : (
         <>
-          <button className="button primary" onClick={claim} disabled={busy || !inRange}>
-            {busy ? 'Claiming…' : 'Claim'}
+          <button className="button primary" onClick={checkIn} disabled={busy || !inRange}>
+            {busy ? 'Checking in…' : 'Check in'}
           </button>
-          <span className="muted footnote">Indoors? Scan the drop’s QR code to claim from anywhere.</span>
+          <span className="muted footnote">Indoors? Scan the drop’s QR code to check in from anywhere.</span>
         </>
       )}
     </div>
@@ -177,66 +152,6 @@ function ClearDrop({ drop, onCleared }: { drop: DropRow; onCleared: () => void }
       {busy ? 'Clearing…' : armed ? `Tap again to ${label.toLowerCase()}` : label}
     </button>
   )
-}
-
-/** Which mini-game this lobby plays, so players know what they're walking into. */
-function GameLine({ drop, radius }: { drop: DropRow; radius: number | null }) {
-  const game = minigameOf(drop.game)
-  const needle = drop.game === 'needle_rain'
-  return (
-    <div className="game-line">
-      <p className="game-kind">
-        <GameIcon kind={drop.game ?? 'shake_off'} />
-        <strong>{game.name}</strong>
-      </p>
-      <p className="muted">
-        {game.blurb}
-        {needle ? '' : ' Every winner gets the points.'}
-      </p>
-      {needle && drop.status === 'active' && <NeedleRival drop={drop} radius={radius} />}
-    </div>
-  )
-}
-
-/** Someone ahead on points, inside this drop's claim radius, with map sharing on. Presence only: nothing is stored. */
-function NeedleRival({ drop, radius }: { drop: DropRow; radius: number | null }) {
-  const { player } = useReadySession()
-  const { others } = usePresence()
-  const { data: scores } = useLeaderboard()
-  if (radius === null) return null
-  const mine = scores.find((row) => row.player_id === player.id)
-  if (!mine) return null
-  const here = others
-    .flatMap((other) => {
-      const score = scores.find((row) => row.player_id === other.playerId)
-      if (!score || score.points <= mine.points) return []
-      const dist = distanceM(other.lat, other.lng, drop.lat, drop.lng)
-      if (dist > radius) return []
-      return [{ name: other.name, gap: score.points - mine.points, dist }]
-    })
-    .sort((a, b) => a.gap - b.gap || a.dist - b.dist)[0]
-  if (!here) return null
-  return (
-    <p className="needle-rival">
-      {here.name} is here. You’re {here.gap} pts behind.
-    </p>
-  )
-}
-
-/** Who's waiting in a mini-game lobby, so players can decide whether it's worth the walk. */
-function LobbyStatus({ dropId }: { dropId: string }) {
-  const { state, phase } = useGame(dropId)
-  if (!state) return null
-  const joined = state.players.length
-  const text =
-    phase.kind === 'playing' || phase.kind === 'tallying'
-      ? 'A round is being played right now'
-      : phase.kind === 'finished'
-        ? 'This round is over'
-        : phase.kind === 'lobby' && phase.startsInMs !== null
-          ? `Starting in ${Math.ceil(phase.startsInMs / 1000)}s · ${joined} joined`
-          : `${joined} of ${state.settings.auto_start_players} joined · starts automatically`
-  return <span className="lobby-status">{text}</span>
 }
 
 export default DropSheet

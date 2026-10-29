@@ -53,7 +53,7 @@ function MeetupSheet({ open, onOpenChange, onCreated }: Props) {
               <Drawer.Title asChild>
                 <h3 className="meetup-title">Start a meetup</h3>
               </Drawer.Title>
-              <p className="muted footnote">Pinned where you’re standing so people can find you. No points, just people.</p>
+              <p className="muted footnote">Pinned where you’re standing so people can find you.</p>
             </div>
             <label className="field">
               What’s happening?

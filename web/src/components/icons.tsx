@@ -17,10 +17,23 @@ export const MapIcon = (p: IconProps) => (
   </Icon>
 )
 
-export const TrophyIcon = (p: IconProps) => (
+export const ChartIcon = (p: IconProps) => (
   <Icon {...p}>
-    <path d="M8 4h8v6a4 4 0 0 1-8 0V4Z" />
-    <path d="M16 6h3v1.5A3.5 3.5 0 0 1 15.6 11M8 6H5v1.5A3.5 3.5 0 0 0 8.4 11M12 14v4M8.5 20h7" />
+    <path d="M4 20h16" />
+    <path d="M7 16v-5M12 16V6M17 16v-8" />
+  </Icon>
+)
+
+export const BellIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15L6 16Z" />
+    <path d="M10 20.5a2 2 0 0 0 4 0" />
+  </Icon>
+)
+
+export const SparkIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18" />
   </Icon>
 )
 
@@ -95,38 +108,6 @@ export const CrossIcon = (p: IconProps) => (
 export const PlusIcon = (p: IconProps) => (
   <Icon {...p} strokeWidth={2.6}>
     <path d="M12 5v14M5 12h14" />
-  </Icon>
-)
-
-/** Shake-Off: a phone with motion lines. */
-export const ShakeIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <rect x="8" y="3" width="8" height="18" rx="2" />
-    <path d="M4 8v8M20 8v8M11 18h2" />
-  </Icon>
-)
-
-/** Quick Draw: a lightning bolt. */
-export const BoltIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z" />
-  </Icon>
-)
-
-/** Needle Rain: a needle falling through rain. */
-export const NeedleIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M12 2v9" />
-    <path d="m9 13 3 9 3-9" />
-    <path d="M6 7.5 7.2 11M18 7.5 16.8 11" />
-  </Icon>
-)
-
-/** Point to the Landmark: a compass. */
-export const CompassIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <circle cx="12" cy="12" r="9" />
-    <path d="m15.5 8.5-2 5-5 2 2-5z" />
   </Icon>
 )
 

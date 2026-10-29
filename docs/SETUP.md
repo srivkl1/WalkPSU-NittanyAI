@@ -20,9 +20,16 @@
    - `20261028000000_discover_sync.sql`
    - `20261028010000_event_rsvps.sql`
    - `20261028020000_player_profiles.sql`
+   - `20261029000000_remove_games_and_points.sql`
+   - `20261029010000_clubs.sql`
+
+   Older files set up mini-games, photo hunts and points, which `20261029000000` removes. Run them anyway: later
+   migrations build on them.
 3. Fallback login: go to **Authentication → Sign In / Providers** and turn on **Allow anonymous sign-ins**.
 4. Go to **Project Settings → API** and copy the Project URL and the anon (publishable) key into `web/.env`.
-5. Photo hunts and AI event search: copy the `service_role` key from the same page into `SUPABASE_SERVICE_ROLE_KEY`, and get a Gemini key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) for `GEMINI_API_KEY`. Paste only the key, not AI Studio's example `curl` command. On Vercel, add both under **Settings → Environment Variables**.
+5. AI event search, the event sync, and club dashboards: copy the `service_role` key from the same page into `SUPABASE_SERVICE_ROLE_KEY`, and get a Gemini key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) for `GEMINI_API_KEY`. Paste only the key, not AI Studio's example `curl` command. On Vercel, add both under **Settings → Environment Variables**.
+
+Admins approve club organizers (Admin page, "Organizer requests") and can open any club's dashboard.
 
 Make yourself an admin in fallback mode. Join the app first, then run this in the SQL editor:
 
@@ -71,7 +78,7 @@ Once `VITE_AUTH0_DOMAIN` and `VITE_AUTH0_CLIENT_ID` are set, the app switches to
 
 ## 5. Live event sync (every 30 minutes)
 
-`/api/sync-events` keeps `discover_events` current: new events become searchable, rescheduled ones move their seeded drop, and cancelled ones close it (points stay). Gemini places events whose location text the name matcher misses ("340 HHD"). It never creates drops; admins still choose those.
+`/api/sync-events` keeps `discover_events` current: new events become searchable, rescheduled ones move their seeded drop, and cancelled ones close it (its check-ins stay). Gemini places events whose location text the name matcher misses ("340 HHD"). It never creates drops; admins still choose those.
 
 1. Apply `20261028000000_discover_sync.sql`.
 2. Pick a long random secret (e.g. `node -e "console.log(crypto.randomUUID() + crypto.randomUUID())"`) and set it as `DISCOVER_SYNC_SECRET` in `web/.env` and in Vercel's environment variables, along with `SUPABASE_SERVICE_ROLE_KEY` and `GEMINI_API_KEY`. Redeploy.

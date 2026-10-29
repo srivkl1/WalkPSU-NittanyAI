@@ -36,7 +36,7 @@ function DropAlerts() {
       const what = drop.type === 'meetup' ? 'meetup' : 'drop'
       toast(distance === null ? `New ${what} on campus` : `New ${what} nearby`, {
         id: `drop-${drop.id}`,
-        description: [drop.title, drop.type === 'meetup' ? drop.subtitle : `${DROP_TYPES[drop.type].label} · ${drop.points} pts`, distance !== null && `${Math.round(distance)} m away`]
+        description: [drop.title, drop.type === 'meetup' ? drop.subtitle : DROP_TYPES[drop.type].label, distance !== null && `${Math.round(distance)} m away`]
           .filter(Boolean)
           .join(' · '),
         action: { label: 'View', onClick: () => navigate('/') },

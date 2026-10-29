@@ -3,17 +3,18 @@ import {
   getClaimCodes,
   getClaimRadius,
   getDrops,
-  getLeaderboard,
+  getMyClubs,
+  getMyEventActivity,
   getMyProfile,
   getUpcomingEvents,
   subscribeToDrops,
+  subscribeToMyActivity,
   subscribeToProfile,
-  subscribeToTable,
   type MyProfile,
   type UpcomingEvent,
 } from './api'
 import { loadBuildings, type Building } from './buildings'
-import type { DropRow, PlayerScoreRow } from './database.types'
+import type { DropRow, OrganizerRequest } from './database.types'
 
 type Subscribe = (onChange: () => void) => () => void
 
@@ -31,13 +32,9 @@ function useLiveQuery<T>(load: () => Promise<T>, initial: T, subscribe: Subscrib
 }
 
 const NO_DROPS: DropRow[] = []
-const NO_SCORES: PlayerScoreRow[] = []
 const NO_CODES = new Map<string, string>()
-// Not drops: a photo hunt's later finders add claims without changing the drop.
-const subscribeToClaims: Subscribe = (onChange) => subscribeToTable('claims', onChange)
 
 export const useDrops = () => useLiveQuery(getDrops, NO_DROPS)
-export const useLeaderboard = () => useLiveQuery(getLeaderboard, NO_SCORES, subscribeToClaims)
 export const useClaimCodes = () => useLiveQuery(getClaimCodes, NO_CODES)
 
 const NO_EVENTS: UpcomingEvent[] = []
@@ -57,6 +54,20 @@ const NO_PROFILE: MyProfile = { major: null, interests: [] }
 const loadProfile = () => getMyProfile().catch(() => NO_PROFILE)
 /** My major and interests; refreshes when I save them. */
 export const useMyProfile = () => useLiveQuery(loadProfile, NO_PROFILE, subscribeToProfile)
+
+const NO_ACTIVITY = { going: new Set<string>(), checkedIn: new Set<string>() }
+// Missing tables (migrations not run) read as no activity rather than an error on every screen.
+const loadActivity = () => getMyEventActivity().catch(() => NO_ACTIVITY)
+/** The events I've RSVP'd to and checked in to; refreshes after I do either. */
+export const useMyEventActivity = () => useLiveQuery(loadActivity, NO_ACTIVITY, subscribeToMyActivity)
+
+const NO_CLUBS: { clubs: string[]; requests: OrganizerRequest[] } = { clubs: [], requests: [] }
+const noSubscription: Subscribe = () => () => {}
+/** The clubs I run and my requests to run others. Call refresh() after asking. */
+export function useMyClubs(playerId: string) {
+  const load = useCallback(() => getMyClubs(playerId).catch(() => NO_CLUBS), [playerId])
+  return useLiveQuery(load, NO_CLUBS, noSubscription)
+}
 
 /** Campus events (Penn State Discover) starting within a week, soonest first, for the map. */
 export const useUpcomingEvents = () => useLiveQuery(loadMapEvents, NO_EVENTS, everyFewMinutes)

@@ -1,12 +1,12 @@
 import { QRCodeSVG } from 'qrcode.react'
 import { useState } from 'react'
-import { Link } from 'react-router'
 import { claimUrl } from '../lib/api'
+import { DROP_TYPES } from '../lib/campus'
 import type { DropRow } from '../lib/database.types'
 import { useClaimCodes } from '../lib/hooks'
 import { ChevronIcon, QrIcon } from './icons'
 
-/** Active drops with a scannable claim QR code each, for claiming where GPS is unreliable (indoors). */
+/** Active drops with a scannable QR code each, for checking in where GPS is unreliable (indoors). */
 function DropQrList({ drops, buildingName }: { drops: DropRow[]; buildingName: (num: string) => string | undefined }) {
   const { data: codes, error, refresh } = useClaimCodes()
   const [openId, setOpenId] = useState<string | null>(null)
@@ -40,7 +40,8 @@ function DropQrList({ drops, buildingName }: { drops: DropRow[]; buildingName: (
                 <span className="list-row-main">
                   <strong className="truncate">{drop.title}</strong>
                   <span className="muted footnote">
-                    {drop.points} pts{place(drop)}
+                    {DROP_TYPES[drop.type].label}
+                    {place(drop)}
                   </span>
                 </span>
                 <span className="visually-hidden">{open ? 'Hide QR' : 'Show QR'}</span>
@@ -50,14 +51,7 @@ function DropQrList({ drops, buildingName }: { drops: DropRow[]; buildingName: (
                 (code ? (
                   <div className="qr-code">
                     <QRCodeSVG value={claimUrl(drop.id, code)} size={240} marginSize={2} />
-                    <span className="muted">
-                      {drop.type === 'minigame' ? 'Scan to join the Shake-Off lobby' : 'Scan with your phone camera to claim'}
-                    </span>
-                    {drop.type === 'minigame' && (
-                      <Link className="button primary" to={`/battle/${drop.id}`}>
-                        Open big screen
-                      </Link>
-                    )}
+                    <span className="muted">Scan with your phone camera to check in</span>
                   </div>
                 ) : (
                   <p className="list-row muted">Loading code…</p>

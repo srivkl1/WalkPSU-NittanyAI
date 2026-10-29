@@ -6,12 +6,10 @@ import BuildingPicker from '../components/BuildingPicker'
 import CampusMap from '../components/CampusMap'
 import { PinIcon } from '../components/icons'
 import DropQrList from '../components/DropQrList'
-import { createDrop, createPhotoHunt, uploadHintPhoto } from '../lib/api'
+import OrganizerRequests from '../components/OrganizerRequests'
+import { createDrop, uploadHintPhoto } from '../lib/api'
 import { findBuildingAt, type Building } from '../lib/buildings'
-import GameIcon from '../game/GameIcon'
-import { MINIGAMES } from '../game/kinds'
 import { DROP_TYPES } from '../lib/campus'
-import type { DropType, MinigameKind } from '../lib/database.types'
 import { useBuildings, useDrops } from '../lib/hooks'
 import { usePresence } from '../session/presence'
 import { useReadySession } from '../session/session'
@@ -37,22 +35,16 @@ function AdminPage() {
   const { position } = usePresence()
   const [target, setTarget] = useState<Target | null>(null)
   const [title, setTitle] = useState('')
-  const [type, setType] = useState<DropType>('minigame')
-  const [game, setGame] = useState<MinigameKind>('shake_off')
-  const [points, setPoints] = useState(10)
   const [minutes, setMinutes] = useState(30)
   const [photo, setPhoto] = useState<File | null>(null)
-  const [twist, setTwist] = useState('')
   const [busy, setBusy] = useState(false)
 
   const namesByNum = useMemo(() => new Map(buildings.map((b) => [b.properties.num, b.properties.name])), [buildings])
   const highlighted = useMemo(() => new Set(drops.flatMap((d) => (d.building_num ? [d.building_num] : []))), [drops])
   const dropPoints = useMemo(() => toPoints(drops.map((d) => ({ lat: d.lat, lng: d.lng, color: DROP_TYPES[d.type].color }))), [drops])
   const targetPoint = useMemo(() => toPoints(target ? [{ lat: target.lat, lng: target.lng, color: '#facc15' }] : []), [target])
-  const isHunt = type === 'photo_hunt'
-  // A photo hunt's title is public before anyone finds it, so naming it after the building would give it away.
   const suggestTitle = (name: string) => {
-    if (!isHunt && !title.trim()) setTitle(name)
+    if (!title.trim()) setTitle(name)
   }
 
   if (!isAdmin) {
@@ -95,24 +87,18 @@ function AdminPage() {
     if (!target) return
     const fields = {
       title: title.trim(),
-      points,
       lat: target.lat,
       lng: target.lng,
       building_num: target.building?.properties.num ?? null,
       expires_at: minutes > 0 ? new Date(Date.now() + minutes * 60_000).toISOString() : null,
     }
-    const ok = await drop(async () => {
-      if (isHunt) {
-        if (!photo) throw new Error('Add a reference photo of the spot')
-        await createPhotoHunt({ ...fields, hint_photo_url: await uploadHintPhoto(photo), twist: twist.trim() })
-      } else {
-        await createDrop({ ...fields, type, game: type === 'minigame' ? game : null, hint_photo_url: photo ? await uploadHintPhoto(photo) : null, created_by: player.id })
-      }
-    }, title.trim())
+    const ok = await drop(
+      async () => createDrop({ ...fields, type: 'checkin', hint_photo_url: photo ? await uploadHintPhoto(photo) : null, created_by: player.id }),
+      title.trim(),
+    )
     if (ok) {
       setTitle('')
       setPhoto(null)
-      setTwist('')
       setTarget(null)
     }
   }
@@ -130,7 +116,7 @@ function AdminPage() {
     const building = findBuildingAt(buildings, lat, lng)
     const label = building ? `Demo: ${building.properties.name}` : 'Demo drop'
     await drop(
-      () => createDrop({ title: label, type: 'checkin', points: 10, lat, lng, building_num: building?.properties.num ?? null, created_by: player.id }),
+      () => createDrop({ title: label, type: 'checkin', lat, lng, building_num: building?.properties.num ?? null, created_by: player.id }),
       label,
       toastId,
     )
@@ -145,10 +131,10 @@ function AdminPage() {
           <PinIcon size={20} />
           Demo drop here
         </button>
-        <span className="muted footnote">A 10-point check-in at your current location.</span>
+        <span className="muted footnote">A check-in at your current location.</span>
       </div>
 
-      <h2>New drop</h2>
+      <h2>New check-in</h2>
       <BuildingPicker buildings={buildings} onPick={pickBuilding} />
       {/* The same GPS reading the player map uses, so a drop placed here is in range from here, even if GPS is off. */}
       <button
@@ -182,76 +168,28 @@ function AdminPage() {
             className="input"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder={isHunt ? 'e.g. Mystery spot #1' : undefined}
             enterKeyHint="done"
             required
           />
-          {isHunt && <span className="muted footnote">Players see this before they find the spot, so don’t name it.</span>}
         </label>
         <label className="field">
-          Type
-          <select className="input" value={type} onChange={(e) => setType(e.target.value as DropType)}>
-            {/* Meetups are posted by players from the map, not dropped here. */}
-            {Object.entries(DROP_TYPES).filter(([value]) => value !== 'meetup').map(([value, { label }]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
+          Open for (minutes, 0 = until cleared)
+          <input className="input" type="number" inputMode="numeric" min={0} value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} />
         </label>
-        {type === 'minigame' && (
-          <fieldset className="game-picker">
-            <legend>Game</legend>
-            {Object.entries(MINIGAMES).map(([value, { name, blurb }]) => (
-              <label key={value} className="game-option">
-                <input type="radio" name="game" value={value} checked={game === value} onChange={() => setGame(value as MinigameKind)} />
-                <GameIcon kind={value as MinigameKind} size={22} />
-                <span>
-                  <strong>{name}</strong>
-                  <span className="muted">{blurb}</span>
-                </span>
-              </label>
-            ))}
-          </fieldset>
-        )}
-        <div className="row">
-          <label className="field">
-            Points
-            <input className="input" type="number" inputMode="numeric" min={1} value={points} onChange={(e) => setPoints(Number(e.target.value))} />
-          </label>
-          <label className="field">
-            Expires in min (0 = never)
-            <input className="input" type="number" inputMode="numeric" min={0} value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} />
-          </label>
-        </div>
-        {isHunt && (
-          <label className="field">
-            Twist
-            <input
-              className="input"
-              value={twist}
-              onChange={(e) => setTwist(e.target.value)}
-              placeholder="e.g. with a thumbs up"
-              maxLength={100}
-              enterKeyHint="done"
-              required
-            />
-            <span className="muted footnote">Their photo must show this too, so it has to be taken on the spot.</span>
-          </label>
-        )}
         <label className="field">
-          {isHunt ? 'Reference photo of the spot' : 'Hint photo (optional)'}
-          <input className="input" type="file" accept="image/*" required={isHunt} onChange={(e) => setPhoto(e.target.files?.[0] ?? null)} />
-          {isHunt && <span className="muted footnote">The exact spot stays hidden until someone finds it. Players see a 250 m search circle.</span>}
+          Photo (optional)
+          <input className="input" type="file" accept="image/*" onChange={(e) => setPhoto(e.target.files?.[0] ?? null)} />
         </label>
         <button className="button primary" disabled={busy || !target || !title.trim()}>
           {busy ? 'Dropping…' : target ? 'Drop it' : 'Pick a spot first'}
         </button>
       </form>
 
+      <h2>Organizer requests</h2>
+      <OrganizerRequests />
+
       <h2>QR codes</h2>
-      <DropQrList drops={drops.filter((d) => d.type !== 'photo_hunt')} buildingName={(num) => namesByNum.get(num)} />
-      <p className="muted footnote">Photo hunts are claimed by photo, so they have no QR code.</p>
+      <DropQrList drops={drops} buildingName={(num) => namesByNum.get(num)} />
     </section>
   )
 }

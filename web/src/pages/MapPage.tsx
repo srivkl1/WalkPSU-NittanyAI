@@ -4,11 +4,11 @@ import { Layer, Popup, Source, useMap, type MapLayerMouseEvent } from 'react-map
 import Avatar from '../components/Avatar'
 import CampusMap from '../components/CampusMap'
 import DropSheet from '../components/DropSheet'
+import EventReminders from '../components/EventReminders'
 import EventSheet from '../components/EventSheet'
 import { CrossIcon, InfoIcon, PlusIcon, SearchIcon } from '../components/icons'
 import MapKeySheet from '../components/MapKeySheet'
 import MeetupSheet from '../components/MeetupSheet'
-import FoundOverlay, { type Found } from '../components/FoundOverlay'
 import PlayerSprite from '../components/PlayerSprite'
 import SearchSheet from '../components/SearchSheet'
 import WalkLayers from '../components/WalkLayers'
@@ -17,19 +17,14 @@ import { DROP_TYPES, eventTheme } from '../lib/campus'
 import type { DropRow } from '../lib/database.types'
 import { distanceM } from '../lib/geo'
 import { useBuildings, useClaimRadius, useDrops, useUpcomingEvents } from '../lib/hooks'
-import { LABEL_FONT } from '../map/basemap'
 import { circlePolygon } from '../map/geometry'
 import { usePresence, type LivePlayer } from '../session/presence'
 import { useReadySession } from '../session/session'
 
 const IN_RANGE = '#16a34a'
-/** A photo hunt's pin once someone has found it. */
-const REVEALED = '#dc2626'
 /** How close a tapped drop is framed: about a block across, so its claim circle and building are both visible. */
 const DROP_ZOOM = 17
 
-/** A photo hunt nobody has found yet: its lat/lng is only the center of a search circle, so it gets no pin. */
-const isHiddenHunt = (d: DropRow) => d.type === 'photo_hunt' && !d.first_found_at
 const SHEET_CLOSE_MS = 500
 
 type MapInstance = MapLayerMouseEvent['target']
@@ -52,13 +47,13 @@ function FlyTo({ target }: { target: { lng: number; lat: number } | null }) {
   }, [map, target])
   return null
 }
-/** Layers whose features open a drop's sheet. Pins come first so they win over the circle underneath. */
-const DROP_LAYERS = ['drop-points', 'hunt-centers', 'hunt-areas']
+/** Layers whose features open a drop's sheet. */
+const DROP_LAYERS = ['drop-points']
 /** Tappable layers, drops first: a drop pin wins over an event pin it overlaps. */
 const TAPPABLE = [...DROP_LAYERS, 'event-points']
 /** "Also here" in an event's card: enough to show a building is busy without burying the map. */
 const MAX_ALSO_HERE = 5
-const pinColor = (d: DropRow) => (d.type === 'photo_hunt' ? REVEALED : DROP_TYPES[d.type].color)
+const pinColor = (d: DropRow) => DROP_TYPES[d.type].color
 
 function MapPage() {
   const { data: drops, error, refresh: refreshDrops } = useDrops()
@@ -70,7 +65,6 @@ function MapPage() {
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null)
   // The sheet keeps its drop while it slides away, so closing never flashes empty content.
   const [sheet, setSheet] = useState<{ drop: DropRow; open: boolean } | null>(null)
-  const [found, setFound] = useState<Found | null>(null)
   const [composing, setComposing] = useState(false)
   const [searching, setSearching] = useState(false)
   const [showingKey, setShowingKey] = useState(false)
@@ -102,8 +96,8 @@ function MapPage() {
       features:
         radius === null
           ? []
-          : // Meetups aren't claimable, so they get a pin but no claim circle.
-            shown.filter((d) => !isHiddenHunt(d) && d.type !== 'meetup').map((d) => {
+          : // Nobody checks in to a meetup, so it gets a pin but no circle.
+            shown.filter((d) => d.type !== 'meetup').map((d) => {
               const distance = here ? distanceM(here.latitude, here.longitude, d.lat, d.lng) : null
               return {
                 type: 'Feature',
@@ -114,29 +108,10 @@ function MapPage() {
     }),
     [shown, radius, here],
   )
-  const huntAreas = useMemo<FeatureCollection<Polygon>>(
-    () => ({
-      type: 'FeatureCollection',
-      features: shown
-        .filter(isHiddenHunt)
-        .map((d) => ({ type: 'Feature', properties: { id: d.id }, geometry: circlePolygon(d.lat, d.lng, d.search_radius_m ?? 125) })),
-    }),
-    [shown],
-  )
-  // A "?" pin at each search circle's center. That point is already the public decoy center, never the real spot.
-  const huntCenters = useMemo<FeatureCollection<Point>>(
-    () => ({
-      type: 'FeatureCollection',
-      features: shown.filter(isHiddenHunt).map((d) => ({ type: 'Feature', properties: { id: d.id }, geometry: { type: 'Point', coordinates: [d.lng, d.lat] } })),
-    }),
-    [shown],
-  )
   const dropPoints = useMemo<FeatureCollection<Point>>(
     () => ({
       type: 'FeatureCollection',
-      features: shown
-        .filter((d) => !isHiddenHunt(d))
-        .map((d) => ({ type: 'Feature', properties: { id: d.id, color: pinColor(d) }, geometry: { type: 'Point', coordinates: [d.lng, d.lat] } })),
+      features: shown.map((d) => ({ type: 'Feature', properties: { id: d.id, color: pinColor(d) }, geometry: { type: 'Point', coordinates: [d.lng, d.lat] } })),
     }),
     [shown],
   )
@@ -206,7 +181,6 @@ function MapPage() {
   const onClick = (e: MapLayerMouseEvent) => {
     const hit = e.features?.[0]
     const id = hit?.properties?.id as string | undefined
-    // An unfound photo hunt is tapped through its "?" pin or its search circle; its lat/lng is that circle's center.
     const drop = hit && DROP_LAYERS.includes(hit.layer.id) ? drops.find((d) => d.id === id) : undefined
     const events = hit?.layer.id === 'event-points' ? eventsByBuilding.get(hit.properties?.num as string) : undefined
     closeEvent()
@@ -225,7 +199,7 @@ function MapPage() {
     }
   }
 
-  // Track the live row; a drop that vanishes (claimed, expired) closes its sheet.
+  // Track the live row; a drop that vanishes (expired, cleared) closes its sheet.
   const sheetDrop = sheet && (drops.find((d) => d.id === sheet.drop.id) ?? sheet.drop)
   const sheetOpen = !!sheet?.open && drops.some((d) => d.id === sheet.drop.id)
   const selectedPlayer = selectedPlayerId ? sprites.find((p) => p.playerId === selectedPlayerId) : undefined
@@ -236,17 +210,13 @@ function MapPage() {
         {/* First, so trails draw under drops and claim circles; the fog places itself under the building glow. */}
         <WalkLayers />
         <FlyTo target={flyTarget} />
-        {/* Under every drop layer: events are background, drops are the game. */}
+        {/* Under every drop layer: events are background, drops are what to walk to. */}
         <Source id="events" type="geojson" data={eventPoints}>
           <Layer
             id="event-points"
             type="circle"
             paint={{ 'circle-radius': 9, 'circle-color': ['get', 'color'], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2.5 }}
           />
-        </Source>
-        <Source id="hunt-areas" type="geojson" data={huntAreas}>
-          <Layer id="hunt-areas" type="fill" paint={{ 'fill-color': DROP_TYPES.photo_hunt.color, 'fill-opacity': 0.14 }} />
-          <Layer id="hunt-areas-line" type="line" paint={{ 'line-color': DROP_TYPES.photo_hunt.color, 'line-width': 2.5, 'line-dasharray': [1, 2] }} />
         </Source>
         <Source id="claim-circles" type="geojson" data={circles}>
           <Layer
@@ -262,19 +232,6 @@ function MapPage() {
             id="drop-points"
             type="circle"
             paint={{ 'circle-radius': 11, 'circle-color': ['get', 'color'], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 3 }}
-          />
-        </Source>
-        <Source id="hunt-centers" type="geojson" data={huntCenters}>
-          <Layer
-            id="hunt-centers"
-            type="circle"
-            paint={{ 'circle-radius': 11, 'circle-color': DROP_TYPES.photo_hunt.color, 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 3 }}
-          />
-          <Layer
-            id="hunt-centers-mark"
-            type="symbol"
-            layout={{ 'text-field': '?', 'text-font': LABEL_FONT, 'text-size': 14, 'text-allow-overlap': true, 'text-ignore-placement': true }}
-            paint={{ 'text-color': '#ffffff' }}
           />
         </Source>
         {sprites.map((p) => (
@@ -338,6 +295,22 @@ function MapPage() {
         <InfoIcon size={22} />
       </button>
       <MapKeySheet open={showingKey} onOpenChange={setShowingKey} />
+      <EventReminders
+        events={upcoming}
+        onShow={(reminded) => {
+          setSelectedPlayerId(null)
+          closeSheet()
+          closeEvent()
+          const drop = dropForEvent(reminded.id)
+          if (drop) {
+            setSheet({ drop, open: true })
+            setFlyTarget({ lng: drop.lng, lat: drop.lat })
+          } else {
+            setEvent({ event: reminded, open: true })
+            if (reminded.building) setFlyTarget({ lng: reminded.building.lng, lat: reminded.building.lat })
+          }
+        }}
+      />
       <button type="button" className="map-pill glass meetup-fab" onClick={() => setComposing(true)}>
         <PlusIcon size={18} />
         Meetup
@@ -381,7 +354,7 @@ function MapPage() {
         radius={radius}
         position={position}
         onClose={closeSheet}
-        onClaimed={() => {
+        onCheckedIn={() => {
           closeSheet()
           refreshDrops()
         }}
@@ -389,15 +362,7 @@ function MapPage() {
           closeSheet()
           refreshDrops()
         }}
-        onFound={(points, reason) => {
-          if (!sheetDrop) return
-          // Only the first finder gets full points; the map's copy of the drop may be a moment stale.
-          setFound({ title: sheetDrop.title, points, first: points === sheetDrop.points && !sheetDrop.first_found_at, reason })
-          closeSheet()
-          refreshDrops()
-        }}
       />
-      {found && <FoundOverlay found={found} onClose={() => setFound(null)} />}
     </div>
   )
 }

@@ -4,7 +4,6 @@ import { BrowserRouter } from 'react-router'
 import { Auth0Provider } from '@auth0/auth0-react'
 import './index.css'
 import './styles/map.css'
-import './styles/game.css'
 import App from './App.tsx'
 import { auth0Config } from './lib/auth0.ts'
 

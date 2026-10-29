@@ -194,15 +194,6 @@
   opacity: 1;
 }
 
-.lobby-status {
-  padding: 10px 14px;
-  border-radius: 14px;
-  background: var(--fill);
-  font-size: 15px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
 .drop-card {
   display: flex;
   flex-direction: column;
@@ -251,18 +242,6 @@
   color: var(--muted);
 }
 
-.points-badge {
-  flex-shrink: 0;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-size: 13px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
-}
-
 .drop-card .button {
   width: 100%;
 }
@@ -276,7 +255,7 @@
   font-weight: 500;
 }
 
-/* Sits on the first line when the text wraps (a photo hunt's two-line hint). */
+/* Sits on the first line when the text wraps. */
 .range svg {
   flex-shrink: 0;
   margin-top: 2px;
@@ -294,88 +273,6 @@
   object-fit: cover;
   /* Placeholder while the photo loads over slow venue Wi-Fi, instead of a see-through gap. */
   background: var(--fill);
-}
-
-.hunt-twist {
-  font-size: 15px;
-}
-
-.found-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: grid;
-  place-items: center;
-  padding: calc(var(--safe-top) + 24px) 20px calc(var(--safe-bottom) + 24px);
-  background: rgba(0, 0, 0, 0.35);
-}
-
-.found-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  width: min(100%, 360px);
-  padding: 28px 24px 24px;
-  border-radius: var(--radius-card);
-  background: var(--surface);
-  box-shadow: var(--shadow-float);
-  text-align: center;
-}
-
-.found-card h1 {
-  font-size: 30px;
-  letter-spacing: -0.02em;
-}
-
-.found-points {
-  color: var(--success);
-  font-size: 40px;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
-}
-
-.found-card .button {
-  width: 100%;
-  margin-top: 6px;
-}
-
-.confetti {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  pointer-events: none;
-}
-
-.confetti span {
-  position: absolute;
-  width: 10px;
-  height: 14px;
-  border-radius: 3px;
-  opacity: 0;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .found-card {
-    animation: badge-in 420ms var(--ease-out) both;
-  }
-
-  .confetti span {
-    animation: confetti-burst 1100ms var(--ease-out) both;
-  }
-}
-
-@keyframes confetti-burst {
-  0% {
-    opacity: 1;
-    transform: rotate(var(--angle)) translateY(0) rotate(0deg);
-  }
-  100% {
-    opacity: 0;
-    transform: rotate(var(--angle)) translateY(calc(var(--distance) * -2)) rotate(540deg);
-  }
 }
 
 /* A <label> wrapping a file input can't be :disabled, so it carries aria-disabled instead. */
@@ -960,4 +857,141 @@
 
 .search-mode-note {
   margin: 0 4px;
+}
+
+/* Event reminder: top left, beside the map key button, when an event I'm going to (or a "For you" pick) is close. */
+.reminder {
+  position: absolute;
+  z-index: 5;
+  top: calc(var(--safe-top) + 12px + 44px + 8px + 40px + 8px);
+  left: calc(var(--gutter-l) + 44px + 8px);
+  display: flex;
+  align-items: center;
+  max-width: min(320px, calc(100% - var(--gutter-l) - var(--gutter-r) - 52px));
+  padding: 4px 4px 4px 0;
+  border: 0.5px solid var(--material-edge);
+  border-radius: 18px;
+}
+
+.reminder-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 4px 4px 4px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.reminder-icon {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.reminder-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.reminder-when {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+}
+
+.reminder-more {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--fill);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.reminder-close {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .reminder {
+    animation: reminder-in 360ms var(--ease-out) both;
+  }
+}
+
+@keyframes reminder-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+/* An event card's check-in, and the club behind the event. */
+.drop-card .check-in-button {
+  width: 100%;
+}
+
+.range.checked-in {
+  align-items: center;
+}
+
+.club-link {
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.club-link > svg:first-child {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.drop-card .club-link {
+  padding: 10px 12px;
+  border-radius: var(--radius-ctl);
+  background: var(--fill);
+}
+
+.link-button {
+  align-self: flex-start;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.club-pending {
+  padding: 4px 0;
 }

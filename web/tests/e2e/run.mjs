@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
-import { HUNT_SPOT, MOCK_PORT, NEEDLE_SPOT, OLD_MAIN_LAWN, SERVICE_ROLE_KEY, startMockSupabase } from '../mock/supabase.mjs'
+import { MOCK_PORT, OLD_MAIN_LAWN, SERVICE_ROLE_KEY, startMockSupabase } from '../mock/supabase.mjs'
 
 const WEB_DIR = fileURLToPath(new URL('../../', import.meta.url))
 const PORT = Number(process.env.E2E_PORT ?? 5199)
@@ -121,19 +121,12 @@ async function mapScenario(browser) {
   check('opens on the player at zoom 17, pitch 45, bearing -17', Math.round(s.zoom) === 17 && s.pitch === 45 && Math.round(s.bearing) === -17, s)
   check('basemap buildings hidden, lawns layer added', s.basemapBuilding === 'none' && s.lawns, s)
   check('only the compact attribution control', s.controls.length === 1 && /attrib/.test(s.controls[0]) && !/compact-show/.test(s.controls[0]), s.controls)
-  check('building hosting the Shake-Off drop is highlighted', JSON.stringify(s.active) === '["0005000"]', s.active)
+  check('building hosting the HUB check-in is highlighted', JSON.stringify(s.active) === '["0005000"]', s.active)
   check('extrusions are 10-15 m', s.heights.length > 0 && Math.min(...s.heights) >= 10 && Math.max(...s.heights) <= 15, [Math.min(...s.heights), Math.max(...s.heights)])
   check('in-range claim circle and my sprite render', s.inRange > 0 && s.me === 1, s)
   check('fog of war sits below the building glow (and everything drawn above it)', s.fogBelowGlow, s)
   const discovered = (await (await fetch(`${MOCK}/__state`)).json()).discovered.map((d) => d.hex_id)
   check('standing at Old Main discovers its area', discovered.includes('0:0'), discovered)
-
-  await tapFeature(page, 'drop-points', 'game-drop')
-  await page.waitForSelector('.map-card')
-  check('Shake-Off drop card offers the lobby', /Open the lobby/.test(await page.textContent('.map-card')))
-  check('the card names the game', /Shake-Off/.test(await page.textContent('.map-card .game-kind')))
-  await page.touchscreen.tap(40, 300)
-  await page.waitForTimeout(300)
 
   await tapFeature(page, 'drop-points', 'center-drop')
   await page.waitForSelector('.map-card button.primary:not([disabled])')
@@ -141,11 +134,24 @@ async function mapScenario(browser) {
   await page.screenshot({ path: SHOTS + 'card.png' })
   const card = await page.textContent('.map-card')
   check('event drop card shows its organization and time', /Penn State Outing Club/.test(card) && /Happening now · until/.test(card), card)
-  await page.click('.map-card button.primary')
-  await page.waitForFunction(() => /Claimed!/.test(document.querySelector('.map-card')?.textContent ?? '') || !document.querySelector('.map-card'))
-  await page.waitForFunction(() => !window.__walkpsuMap.queryRenderedFeatures({ layers: ['drop-points'] }).some((f) => f.properties.id === 'center-drop'), null, { timeout: 10_000 })
-  const state = await (await fetch(`${MOCK}/__state`)).json()
-  check('Claim in range succeeds and the drop leaves the map', state.claims.some((c) => c.drop_id === 'center-drop'), state.claims)
+  check('and no points anywhere', !/pts|points/i.test(card), card)
+  await page.click('.map-card button.primary:has-text("Check in")')
+  await page.waitForSelector('[data-sonner-toast]:has-text("You’re checked in!")', { timeout: 10_000 })
+  let state = await (await fetch(`${MOCK}/__state`)).json()
+  check('checking in within range is recorded', state.claims.some((c) => c.drop_id === 'center-drop'), state.claims)
+  check('and the drop stays open for everyone else', state.drops.find((d) => d.id === 'center-drop').status === 'active')
+  await page.waitForTimeout(800)
+  await tapFeature(page, 'drop-points', 'center-drop')
+  await page.waitForSelector('.map-card button.primary:not([disabled])')
+  await page.waitForTimeout(600)
+  await page.click('.map-card button.primary:has-text("Check in")')
+  await page.waitForSelector('[data-sonner-toast]:has-text("already checked in")', { timeout: 10_000 })
+  state = await (await fetch(`${MOCK}/__state`)).json()
+  check('a second check-in is refused', state.claims.filter((c) => c.drop_id === 'center-drop').length === 1, state.claims)
+  // That refusal is a 400 on purpose.
+  page.errors = page.errors.filter((e) => !/400 POST .*claim_drop/.test(e))
+  await page.touchscreen.tap(40, 300)
+  await page.waitForTimeout(300)
 
   const fps = await page.evaluate(async () => {
     const map = window.__walkpsuMap
@@ -176,9 +182,8 @@ async function mapScenario(browser) {
   await page.waitForTimeout(1300)
   check('recenter returns to the player at zoom 17', Math.round(await page.evaluate(() => window.__walkpsuMap.getZoom())) === 17)
 
-  await page.click('a[href="/leaderboard"]')
-  await page.waitForSelector('.leaderboard-row')
-  check('leaderboard credits the claim', /Rayhan \(you\)\s*15/.test((await page.textContent('.leaderboard')).replace(/\s+/g, ' ')), await page.textContent('.leaderboard'))
+  const tabs = await page.$$eval('.bottom-nav-tab', (els) => els.map((e) => e.textContent.trim()))
+  check('no leaderboard tab; admins get Clubs', JSON.stringify(tabs) === '["Map","Clubs","Profile"]', tabs)
 
   await page.goto(`${BASE}/admin`)
   await mapReady(page)
@@ -193,74 +198,17 @@ async function mapScenario(browser) {
   await page.touchscreen.tap(oldMain.x, oldMain.y)
   await page.waitForTimeout(400)
   const admin = await page.evaluate(() => ({
-    where: document.querySelector('main section > p.muted')?.textContent,
+    where: document.querySelector('main section > p.muted.footnote')?.textContent,
     title: document.querySelector('form input.input')?.value,
     target: window.__walkpsuMap.queryRenderedFeatures({ layers: ['admin-target'] }).length,
   }))
   check('admin tap-to-place resolves the building', admin.where === 'At Old Main' && admin.title === 'Old Main' && admin.target === 1, admin)
-  const options = (await page.$$eval('.game-option', (els) => els.map((el) => el.textContent))).join(' | ')
-  check('a minigame drop offers a game picker with descriptions', /Shake-Off.*shake.*\|.*Quick Draw.*DRAW!/.test(options) && /Needle Rain/.test(options) && /Point to the Landmark/.test(options), options)
-  await page.check('.game-option input[value="quick_draw"]')
+  const form = (await page.textContent('form')).replace(/\s+/g, ' ')
+  check('the admin form has no game picker, type, or points', !(await page.$('.game-option, form select')) && !/Points|Mini-game|Photo hunt/.test(form), form)
   await page.click('form button.primary')
   await page.waitForFunction(() => document.querySelector('form input.input')?.value === '')
   const created = (await (await fetch(`${MOCK}/__state`)).json()).drops.find((d) => d.title === 'Old Main')
-  check('the drop stores the chosen game', created?.type === 'minigame' && created.game === 'quick_draw', created)
-  check('no console errors', page.errors.length === 0, page.errors)
-  await page.context().close()
-}
-
-// 1x1 PNG: any real image will do, since the mock referee accepts every photo.
-const PHOTO = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64')
-
-async function photoHuntScenario(browser) {
-  console.log('\n# Photo hunt (player 50 m from the hidden spot, inside the 60 m claim radius)')
-  // Not exactly on the spot: the player's sprite would sit on top of the revealed pin and swallow the tap.
-  const page = await newPhone(browser, { lat: HUNT_SPOT.lat, lng: HUNT_SPOT.lng + 50 / (M_PER_DEG_LAT * Math.cos((HUNT_SPOT.lat * Math.PI) / 180)) })
-  // vite preview doesn't run web/api, and the real referee is Gemini, so the mock stands in for /api/verify-photo.
-  await page.route('**/api/verify-photo', async (route) => {
-    const res = await fetch(`${MOCK}/__verify-photo`, { method: 'POST', headers: route.request().headers(), body: route.request().postData() })
-    await route.fulfill({ status: res.status, contentType: 'application/json', body: await res.text() })
-  })
-  await mapReady(page)
-  await page.waitForTimeout(1500)
-
-  const rendered = () =>
-    page.evaluate(() => {
-      const q = (layers) => window.__walkpsuMap.queryRenderedFeatures({ layers }).map((f) => f.properties.id)
-      return { areas: q(['hunt-areas']), pins: q(['drop-points']) }
-    })
-  let s = await rendered()
-  check('hidden hunt shows a search circle and no pin', s.areas.includes('hunt-drop') && !s.pins.includes('hunt-drop'), s)
-
-  const hunt = (await (await fetch(`${MOCK}/__state`)).json()).drops.find((d) => d.id === 'hunt-drop')
-  const center = await page.evaluate(([lng, lat]) => {
-    const map = window.__walkpsuMap
-    const box = map.getContainer().getBoundingClientRect()
-    const p = map.project([lng, lat])
-    return { x: box.left + p.x, y: box.top + p.y }
-  }, [hunt.lng, hunt.lat])
-  await page.touchscreen.tap(center.x, center.y)
-  await page.waitForSelector('.map-card .hunt-twist')
-  await page.waitForSelector('.map-card label.button:not([aria-disabled])')
-  check('card shows the twist and a camera button', /with a thumbs up/.test(await page.textContent('.map-card')) && /Take the photo/.test(await page.textContent('.map-card')))
-  await page.screenshot({ path: SHOTS + 'photo-hunt-card.png' })
-
-  await page.setInputFiles('.map-card input[type=file]', { name: 'spot.png', mimeType: 'image/png', buffer: PHOTO })
-  await page.waitForSelector('.found-overlay', { timeout: 10_000 })
-  const overlay = (await page.textContent('.found-overlay')).replace(/\s+/g, ' ')
-  check('celebration shows the points and that the pin is revealed', /Found it!.*\+20 points.*First to find it/.test(overlay), overlay)
-  await page.screenshot({ path: SHOTS + 'photo-hunt-celebration.png' })
-  await page.click('.found-overlay .button')
-  await page.waitForFunction(() => window.__walkpsuMap.queryRenderedFeatures({ layers: ['drop-points'] }).some((f) => f.properties.id === 'hunt-drop'), null, { timeout: 10_000 })
-  s = await rendered()
-  check('after the first find, the red pin replaces the search circle', s.pins.includes('hunt-drop') && !s.areas.includes('hunt-drop'), s)
-  const state = await (await fetch(`${MOCK}/__state`)).json()
-  check('the claim earned the full 20 points', state.claims.some((c) => c.drop_id === 'hunt-drop' && c.points === 20), state.claims)
-  await page.screenshot({ path: SHOTS + 'photo-hunt-found.png' })
-
-  await tapFeature(page, 'drop-points', 'hunt-drop')
-  await page.waitForFunction(() => /Closes in [67]:\d\d/.test(document.querySelector('.map-card')?.textContent ?? ''), null, { timeout: 5_000 })
-  check('revealed card counts down the 7-minute window', true)
+  check('admins drop check-ins', created?.type === 'checkin', created)
   check('no console errors', page.errors.length === 0, page.errors)
   await page.context().close()
 }
@@ -290,7 +238,7 @@ async function searchScenario(browser) {
   let text = await sheetText()
   check('results show title, organization, place, and Gemini’s reason', /Late Night Pancakes.*Library Programming.*Pattee Library.*free pancakes at Pattee/.test(text), text)
   check('an online event is listed with its location and no building', /Virtual Study Hall.*Online/.test(text), text)
-  check('matching live drops come first, under "Live on the map"', /Live on the map\s*Lawn Picnic.*Check-in · 15 pts.*Campus events/.test(text), text)
+  check('matching live drops come first, under "Live on the map"', /Live on the map\s*Lawn Picnic.*Check-in.*Campus events/.test(text), text)
   check('a campus event already listed as a live drop isn’t repeated', (text.match(/Lawn Picnic/g) ?? []).length === 1, text)
   const narrowed = await page.evaluate(() => ({
     pill: document.querySelector('.map-top [role="status"]').textContent,
@@ -323,7 +271,7 @@ async function searchScenario(browser) {
   check('reopening keeps the last results', /Late Night Pancakes/.test(await sheetText()))
   await page.click('.search-result:has-text("Lawn Picnic")')
   await page.waitForSelector('.drop-sheet:not(.search-sheet):not(.event-sheet) h3:has-text("Lawn Picnic")', { timeout: 5000 })
-  check('a claimable result opens the drop’s own card', /Claim/.test(await page.textContent('.drop-sheet:not(.search-sheet):not(.event-sheet)')))
+  check('a result you can check in at opens the drop’s own card', /Check in/.test(await page.textContent('.drop-sheet:not(.search-sheet):not(.event-sheet)')))
   const glowAfter = await page.evaluate(() => [...new Set(window.__walkpsuMap.queryRenderedFeatures({ layers: ['buildings-active'] }).map((f) => f.properties.num))])
   check('the searched building stops glowing once its card closes', !glowAfter.includes('0003000'), glowAfter)
 
@@ -351,7 +299,7 @@ async function searchScenario(browser) {
       pins: window.__walkpsuMap.getSource('drops').serialize().data.features.length,
       clear: !!document.querySelector('.pill-clear'),
     }))
-  const live = (await (await fetch(`${MOCK}/__state`)).json()).drops.filter((d) => d.status === 'active' && !(d.type === 'photo_hunt' && !d.first_found_at)).length
+  const live = (await (await fetch(`${MOCK}/__state`)).json()).drops.filter((d) => d.status === 'active').length
 
   // A search with no matching drops ("zzz") leaves every drop on the map instead of emptying it.
   await page.fill('.search-sheet input', 'zzz')
@@ -491,7 +439,7 @@ async function campusEventsScenario(browser) {
     JSON.stringify(comingUp?.titles) === JSON.stringify(['Lawn Picnic', 'Chemistry Club Social', 'Virtual Hangout', 'Debate Society', 'Physics Study Night', 'Next Month Gala']),
     comingUp,
   )
-  check('a listed event that is a drop says it’s claimable', /Lawn Picnic.*Claimable · 15 pts/.test(comingUp?.text ?? ''))
+  check('a listed event that is a drop says you can check in there', /Lawn Picnic.*Check in here/.test(comingUp?.text ?? ''))
   check('with no profile yet, it offers picks instead of a For you list', !!(await page.$('.search-sheet .for-you-nudge')) && (await sheetSection('For you')) === null)
   await page.screenshot({ path: SHOTS + 'coming-up.png' })
 
@@ -528,7 +476,7 @@ async function campusEventsScenario(browser) {
   await page.click('.map-info')
   await page.waitForSelector('.map-key-sheet .map-key-row')
   const key = await page.$$eval('.map-key-sheet .map-key-row', (rows) => rows.map((r) => r.textContent.replace(/\s+/g, ' ').trim()))
-  check('the ⓘ opens a map key: every event type, the drops, and the building colors', key.length === 9 + 5 + 2 && /^Social/.test(key[0]) && key.some((r) => /^Meetup/.test(r)) && key.some((r) => /^Light blue/.test(r)), key)
+  check('the ⓘ opens a map key: every event type, the drops, and the building colors', key.length === 9 + 2 + 2 && /^Social/.test(key[0]) && key.some((r) => /^Meetup/.test(r)) && key.some((r) => /^Light blue/.test(r)), key)
   const cardClosed = await page
     .waitForFunction(() => !document.querySelector('.event-sheet[data-state="open"]'), null, { timeout: 3000 })
     .then(() => true, () => false)
@@ -538,8 +486,129 @@ async function campusEventsScenario(browser) {
   await page.context().close()
 }
 
+async function clubsScenario(browser) {
+  console.log('\n# Clubs: event check-in, reminders, asking to run a club, approval, and the dashboard')
+  const hours = (h) => new Date(Date.now() + h * 3600_000).toISOString()
+  const WILLARD = { num: '0012000', name: 'Willard (Joseph M)', lat: 40.79568, lng: -77.864627, matched_by: 'location text' }
+  const club = (id, title, starts, ends) => ({
+    id, title, organization: 'Chess Club', theme: 'Social', categories: [], benefits: [], starts_at: hours(starts), ends_at: hours(ends), location: WILLARD.name, lat: null, lng: null, building: WILLARD,
+  })
+  await fetch(`${MOCK}/rest/v1/rpc/sync_discover_events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_ROLE_KEY}` },
+    // Live now (started 15 minutes ago), a week ago, and in two days.
+    body: JSON.stringify({ p_events: [club('chess-live', 'Chess Club Live', -0.25, 1.5), club('chess-past', 'Chess Night', -24 * 7, -24 * 7 + 2), club('chess-next', 'Chess Strategy', 48, 50)], p_complete: false }),
+  })
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url')
+  await fetch(`${MOCK}/rest/v1/rpc/set_going`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${b64({ alg: 'HS256' })}.${b64({ sub: 'bot0', role: 'authenticated' })}.mock` },
+    body: JSON.stringify({ p_event_id: 'chess-next', p_going: true }),
+  })
+  // Two bots came last week. (No RPC checks anyone in to a past event, so straight into the mock's data.)
+  for (const bot of ['bot0', 'bot1']) mock.db.eventCheckins.push({ event_id: 'chess-past', player_id: bot, created_at: hours(-24 * 7) })
+
+  // 45 m south of Willard, where the live event is: in range, and my sprite doesn't cover the building's pin.
+  const page = await newPhone(browser, { lat: WILLARD.lat - 45 / M_PER_DEG_LAT, lng: WILLARD.lng })
+  await mapReady(page)
+  const me = mock.db.players.at(-1)
+  await page.waitForFunction(() => window.__walkpsuMap.queryRenderedFeatures({ layers: ['event-points'] }).some((f) => f.properties.num === '0012000'), null, { timeout: 10_000 })
+  const pt = await page.evaluate(() => {
+    const map = window.__walkpsuMap
+    const f = map.queryRenderedFeatures({ layers: ['event-points'] }).find((x) => x.properties.num === '0012000')
+    const box = map.getContainer().getBoundingClientRect()
+    const p = map.project(f.geometry.coordinates)
+    return { x: box.left + p.x, y: box.top + p.y }
+  })
+  await page.mouse.click(pt.x, pt.y)
+  await page.waitForFunction(() => document.querySelector('.event-sheet h3')?.textContent === 'Chess Club Live', null, { timeout: 5000 })
+  await page.waitForSelector('.event-sheet .check-in-button:not([disabled])', { timeout: 10_000 })
+  check('a live event’s card offers check-in when you’re at its building', /You’re here/.test(await page.textContent('.event-sheet')))
+
+  // RSVP, and the reminder shows top left.
+  await page.waitForSelector('.going-button:not([disabled])')
+  await page.click('.going-button')
+  await page.waitForSelector('.reminder', { timeout: 5000 })
+  const reminder = (await page.textContent('.reminder')).replace(/\s+/g, ' ')
+  check('an event I’m going to that’s on now shows a reminder', /Happening now · You’re going/.test(reminder) && /Chess Club Live/.test(reminder) && /Willard/.test(reminder), reminder)
+  const box = await page.$eval('.reminder', (el) => el.getBoundingClientRect().toJSON())
+  check('top left of the map', box.left < 80 && box.top < 200, box)
+  await page.screenshot({ path: SHOTS + 'reminder.png' })
+
+  await page.click('.event-sheet .check-in-button')
+  await page.waitForSelector('.event-sheet .checked-in', { timeout: 10_000 })
+  check('checking in by GPS is recorded', mock.db.eventCheckins.some((c) => c.event_id === 'chess-live' && c.player_id === me.id))
+  check('and its reminder goes away', await page.waitForSelector('.reminder', { state: 'detached', timeout: 5000 }).then(() => true, () => false))
+
+  // Ask to run the club.
+  await page.click('.event-sheet .club-ask')
+  await page.fill('.club-ask-form input', 'President')
+  await page.click('.club-ask-form button.primary')
+  await page.waitForSelector('.event-sheet .club-pending', { timeout: 5000 })
+  const request = mock.db.requests.find((r) => r.organization === 'Chess Club' && r.player_id === me.id)
+  check('the request waits for an admin, with my role', request?.status === 'pending' && request.note === 'President', request)
+  await page.screenshot({ path: SHOTS + 'event-checked-in.png' })
+
+  // Everyone is an admin in the mock: approve it from /admin.
+  await page.goto(`${BASE}/admin`)
+  await page.waitForSelector('.organizer-request:has-text("Chess Club")', { timeout: 10_000 })
+  check('admins see who asked and why', /Rayhan · “President”/.test(await page.textContent('.organizer-request:has-text("Chess Club")')))
+  await page.click('.organizer-request:has-text("Chess Club") button.primary')
+  await page.waitForSelector('main :text("No one is waiting.")', { timeout: 5000 })
+  check('approving makes me an organizer', mock.db.organizers.some((o) => o.organization === 'Chess Club' && o.player_id === me.id))
+
+  // I came last week too: of 3 people who came, 1 came back.
+  mock.db.eventCheckins.push({ event_id: 'chess-past', player_id: me.id, created_at: hours(-24 * 7) })
+  await page.route('**/api/club-insights', async (route) => {
+    const res = await fetch(`${MOCK}/__club-insights`, { method: 'POST', headers: route.request().headers(), body: route.request().postData() })
+    await route.fulfill({ status: res.status, contentType: 'application/json', body: await res.text() })
+  })
+  await page.click('.bottom-nav a[href="/clubs"]')
+  await page.waitForSelector('.club-link:has-text("Chess Club")')
+  check('the Clubs tab lists the club I run', /You run this club/.test(await page.textContent('.club-link:has-text("Chess Club")')))
+  await page.click('.club-link:has-text("Chess Club")')
+  await page.waitForSelector('.retention-rate')
+  await page.waitForSelector('.suggestion')
+  const dash = await page.evaluate(() => ({
+    rate: document.querySelector('.retention-rate').textContent,
+    retention: document.querySelector('.retention-card').textContent.replace(/\s+/g, ' '),
+    tiles: Object.fromEntries([...document.querySelectorAll('.stat-tile')].map((t) => [t.children[0].textContent, t.children[1].textContent])),
+    suggestions: document.querySelectorAll('.suggestion').length,
+    text: document.querySelector('.club-dashboard').textContent.replace(/\s+/g, ' '),
+  }))
+  check('the second-visit rate leads the dashboard', dash.rate === '33%' && /1 of 3 people who came came back/.test(dash.retention), dash)
+  check('interested, RSVP’d, checked in, came back', JSON.stringify(dash.tiles) === JSON.stringify({ Interested: '4', 'RSVP’d': '2', 'Checked in': '4', 'Came back': '1' }), dash.tiles)
+  check('next-event ideas, labeled when they come from the numbers alone', dash.suggestions === 2 && /AI is unavailable right now/.test(dash.text) && /Osmond Laboratory/.test(dash.text), dash.text)
+  check('upcoming events with their counts', /Chess Club Live.*2 interested · 1 going · 1 checked in/.test(dash.text) && /Chess Strategy.*2 interested · 1 going/.test(dash.text), dash.text)
+  check('past events with how many came', /Chess Night.*3 came/.test(dash.text), dash.text)
+  check('counts only, never who', !/Rayhan|Bot Ana|Bot Ben/.test(dash.text), dash.text)
+  await page.screenshot({ path: SHOTS + 'club-dashboard.png', fullPage: true })
+
+  // The door QR code checks a second phone in from anywhere.
+  await page.click('.qr-toggle:has-text("Chess Club Live")')
+  await page.waitForSelector('.qr-code svg')
+  const code = mock.db.eventSecrets.find((s) => s.event_id === 'chess-live')?.code
+  check('an upcoming event shows its door QR code', !!code)
+  const guest = await newPhone(browser, { lat: OLD_MAIN_LAWN.lat, lng: OLD_MAIN_LAWN.lng })
+  // Let the map finish loading first, so leaving the page doesn't abort its tile requests.
+  await mapReady(guest)
+  await guest.waitForTimeout(1500)
+  await guest.goto(`${BASE}/checkin/chess-live?key=${code}`)
+  await guest.waitForSelector('h1:has-text("checked in")', { timeout: 10_000 })
+  check('scanning the door QR checks in from anywhere', (await guest.textContent('h1')) === 'You’re checked in!' && mock.db.eventCheckins.filter((c) => c.event_id === 'chess-live').length === 2)
+  await guest.reload()
+  await guest.waitForSelector('h1:has-text("checked in")', { timeout: 10_000 })
+  check('scanning again says you’re already in', (await guest.textContent('h1')) === 'Already checked in')
+  await guest.goto(`${BASE}/checkin/chess-live?key=wrong`)
+  await guest.waitForSelector('h1:has-text("Couldn’t check in")', { timeout: 10_000 })
+  check('a wrong code is refused', /doesn't match/.test(await guest.textContent('main')))
+  check('no console errors', page.errors.length === 0 && guest.errors.filter((e) => !/400 POST .*check_in_event/.test(e)).length === 0, [...page.errors, ...guest.errors])
+  await guest.context().close()
+  await page.context().close()
+}
+
 async function meetupScenario(browser) {
-  console.log('\n# Meetups and clearing drops (runs last: it clears the revealed photo hunt)')
+  console.log('\n# Meetups and clearing drops (runs last: it clears the HUB check-in)')
   const page = await newPhone(browser, { lat: OLD_MAIN_LAWN.lat - 40 / M_PER_DEG_LAT, lng: OLD_MAIN_LAWN.lng })
   await mapReady(page)
   await page.waitForTimeout(1000)
@@ -558,7 +627,7 @@ async function meetupScenario(browser) {
   const meetup = state.drops.find((d) => d.type === 'meetup' && d.status === 'active')
   check('stored as a 30-minute meetup', meetup && Math.round((Date.parse(meetup.expires_at) - Date.parse(meetup.created_at)) / 60_000) === 30, meetup)
   await page.waitForFunction((id) => window.__walkpsuMap.queryRenderedFeatures({ layers: ['drop-points'] }).some((f) => f.properties.id === id), meetup.id, { timeout: 10_000 })
-  check('it gets a pin but no claim circle', await page.evaluate(() => window.__walkpsuMap.getSource('claim-circles').serialize().data.features.length) === state.drops.filter((d) => d.status === 'active' && !['meetup'].includes(d.type) && !(d.type === 'photo_hunt' && !d.first_found_at)).length)
+  check('it gets a pin but no claim circle', await page.evaluate(() => window.__walkpsuMap.getSource('claim-circles').serialize().data.features.length) === state.drops.filter((d) => d.status === 'active' && d.type !== 'meetup').length)
 
   await page.click('.clear-drop')
   check('ending asks for a second tap', /Tap again/.test(await page.textContent('.clear-drop')))
@@ -567,261 +636,20 @@ async function meetupScenario(browser) {
   state = await (await fetch(`${MOCK}/__state`)).json()
   check('my meetup ends and leaves the map', state.drops.find((d) => d.id === meetup.id).status === 'expired')
 
-  // Everyone is an admin in the mock: clear the photo hunt revealed earlier. Center it first, so the tap isn't
+  // Everyone is an admin in the mock: clear the HUB check-in. Center it first, so the tap isn't
   // caught by the toast at the top of the screen.
-  const hunt = state.drops.find((d) => d.id === 'hunt-drop')
-  await page.evaluate(([lng, lat]) => window.__walkpsuMap.jumpTo({ center: [lng, lat] }), [hunt.lng, hunt.lat])
+  const hub = state.drops.find((d) => d.id === 'hub-drop')
+  await page.evaluate(([lng, lat]) => window.__walkpsuMap.jumpTo({ center: [lng, lat] }), [hub.lng, hub.lat])
   await page.waitForTimeout(800)
-  await tapFeature(page, 'drop-points', 'hunt-drop')
+  await tapFeature(page, 'drop-points', 'hub-drop')
   await page.waitForSelector('.drop-sheet .clear-drop')
   check('admins get "Clear from map" on any drop', /Clear from map/.test(await page.textContent('.drop-sheet .clear-drop')))
   await page.click('.drop-sheet .clear-drop')
   await page.click('.drop-sheet .clear-drop')
-  await page.waitForFunction(() => !window.__walkpsuMap.queryRenderedFeatures({ layers: ['drop-points'] }).some((f) => f.properties.id === 'hunt-drop'), null, { timeout: 10_000 })
+  await page.waitForFunction(() => !window.__walkpsuMap.queryRenderedFeatures({ layers: ['drop-points'] }).some((f) => f.properties.id === 'hub-drop'), null, { timeout: 10_000 })
   state = await (await fetch(`${MOCK}/__state`)).json()
-  check('a cleared drop is expired, and the points it gave stay', state.drops.find((d) => d.id === 'hunt-drop').status === 'expired' && state.claims.some((c) => c.drop_id === 'hunt-drop'))
+  check('a cleared drop is expired, not deleted', state.drops.find((d) => d.id === 'hub-drop').status === 'expired')
   check('no console errors', page.errors.length === 0, page.errors)
-  await page.context().close()
-}
-
-async function shakeOffScenario(browser) {
-  console.log('\n# Shake-Off (3 bot players already in the lobby; joining makes 4)')
-  const page = await newPhone(browser, { lat: OLD_MAIN_LAWN.lat, lng: OLD_MAIN_LAWN.lng })
-  await page.waitForSelector('.bottom-nav')
-  // Behave like Android Chrome: no permission prompt, a live sensor stream.
-  await page.evaluate(() => Object.defineProperty(DeviceMotionEvent, 'requestPermission', { value: undefined, configurable: true }))
-  await page.evaluate(() => {
-    window.history.pushState({}, '', '/game/game-drop')
-    window.dispatchEvent(new PopStateEvent('popstate'))
-    window.__motion = (x) => window.dispatchEvent(new DeviceMotionEvent('devicemotion', { acceleration: { x, y: 0, z: 0 }, accelerationIncludingGravity: { x, y: 9.81, z: 0 }, interval: 16 }))
-    window.__idle = setInterval(() => window.__motion(0.3), 100)
-  })
-  await page.click('text=Join the Shake-Off')
-  await page.waitForSelector('.lobby-sides', { timeout: 10_000 })
-  check('countdown lobby shows both sides with my name marked', /Rayhan \(you\)/.test(await page.textContent('.lobby-sides')))
-  await page.waitForSelector('text=SHAKE!', { timeout: 15_000 })
-  const shaken = await page.evaluate(async () => {
-    let i = 0
-    while (document.body.innerText.includes('SHAKE!')) {
-      window.__motion(i++ % 2 ? 22 : -22)
-      await new Promise((r) => setTimeout(r, 170))
-    }
-    clearInterval(window.__idle)
-    return i
-  })
-  await page.waitForSelector('.game-winners', { timeout: 15_000 })
-  await page.screenshot({ path: SHOTS + 'shake-off-result.png' })
-  const result = (await page.textContent('.game-screen')).replace(/\s+/g, ' ')
-  const state = await (await fetch(`${MOCK}/__state`)).json()
-  const mine = state.gamePlayers.find((gp) => !gp.player_id.startsWith('bot'))
-  check(`shakes counted and stored under the cap (${mine?.shakes} of ${shaken} jolts, cap 120)`, mine?.shakes > 40 && mine.shakes <= 120, mine)
-  check('winner screen names the winners and points', /Rayhan & Bot \w+ win!\s*\+30 points each/.test(result), result)
-  check('MVP called out', /MVP: Rayhan \(you\)/.test(result), result)
-  check('no console errors', page.errors.length === 0, page.errors)
-  await page.context().close()
-}
-
-async function quickDrawScenario(browser) {
-  console.log('\n# Quick Draw (3 bots in the lobby; joining makes 4; 3 rounds)')
-  const page = await newPhone(browser, { lat: OLD_MAIN_LAWN.lat - 30 / M_PER_DEG_LAT, lng: OLD_MAIN_LAWN.lng })
-  await page.waitForSelector('.bottom-nav')
-  // A full page load, not in-app navigation: unmounting a loaded map races WalkLayers' fog layers (console errors).
-  await page.addInitScript(() => Object.defineProperty(DeviceMotionEvent, 'requestPermission', { value: undefined, configurable: true }))
-  await page.goto(`${BASE}/game/draw-drop`)
-  page.errors = [] // leaving the map page cancels its tile requests; only the game page's errors count
-  await page.evaluate(() => {
-    // Holding still: a little hand tremor in both acceleration and rotation, which must never count as a flick.
-    window.__motion = (x, spin = 0) =>
-      window.dispatchEvent(
-        new DeviceMotionEvent('devicemotion', { acceleration: { x, y: 0, z: 0 }, accelerationIncludingGravity: { x, y: 9.81, z: 0 }, rotationRate: { alpha: 0, beta: 0, gamma: spin }, interval: 16 }),
-      )
-    window.__idle = setInterval(() => window.__motion(0.4, 12), 100)
-  })
-  await page.waitForSelector('.game-kind')
-  check('lobby names the game', /Quick Draw/.test(await page.textContent('.game-kind')))
-  // The big screen loads first: booting a second app (and its software-rendered map) mid-round would slow the phone.
-  const projector = await newPhone(browser, OLD_MAIN_LAWN)
-  // Let the map finish loading first: leaving it mid-load races its fog layers into console errors.
-  await projector.waitForSelector('.bottom-nav')
-  await projector.goto(`${BASE}/battle/draw-drop`)
-  projector.errors = []
-  await projector.waitForSelector('.battle-title')
-  await page.click('text=Join the Quick Draw')
-  await page.waitForSelector('.lobby-sides', { timeout: 10_000 })
-
-  const outcomes = []
-  for (const round of [1, 2, 3]) {
-    await page.waitForSelector(`text=Round ${round} of 3`, { timeout: 15_000 })
-    await page.waitForSelector('.draw-screen[data-stage="hold"]', { timeout: 5_000 })
-    if (round === 1) await page.screenshot({ path: SHOTS + 'quick-draw-hold.png' })
-    if (round === 2) {
-      // Jump the gun: a small flick while it still says "Hold still…".
-      await page.evaluate(() => window.__motion(4))
-    } else {
-      await page.waitForSelector('.draw-signal', { timeout: 5_000 })
-      if (round === 1) await page.screenshot({ path: SHOTS + 'quick-draw-draw.png' })
-      await page.waitForTimeout(150)
-      // Gentle flicks must register: round 1 a light jolt (3.5 m/s²), round 3 a pure wrist twist (gyroscope only).
-      await page.evaluate((round) => (round === 1 ? window.__motion(3.5) : window.__motion(0, 140)), round)
-    }
-    await page.waitForSelector('.draw-screen[data-stage="done"]', { timeout: 5_000 })
-    outcomes.push((await page.textContent('.game-hero')).replace(/\s+/g, ' ').trim())
-    if (round === 1) {
-      await page.screenshot({ path: SHOTS + 'quick-draw-time.png' })
-      await projector.waitForFunction(() => /Rayhan\s*White\s*\d+ ms/.test(document.querySelector('.round-ranking')?.textContent ?? ''), null, { timeout: 5_000 })
-      await projector.screenshot({ path: SHOTS + 'quick-draw-projector.png' })
-      check('projector ranks this round live', true)
-    }
-  }
-  const [first, second, third] = outcomes
-  check(`a flick after DRAW! shows the time (${first}, ${third})`, /^\d+\s*ms$/.test(first) && /^\d+\s*ms$/.test(third), outcomes)
-  check('a flick before DRAW! is a false start', /False start!/.test(second), second)
-  const state = await (await fetch(`${MOCK}/__state`)).json()
-  const mine = state.results.filter((r) => r.drop_id === 'draw-drop' && !r.player_id.startsWith('bot')).sort((a, b) => a.round - b.round)
-  check('server stored 2 times and 1 false start', mine.length === 3 && mine[1].false_start && mine[0].value >= 100 && mine[2].value >= 100, mine)
-  check('the server stores the time the phone measured', `${mine[0].value}ms` === first.replace(/\s/g, '') && `${mine[2].value}ms` === third.replace(/\s/g, ''), { mine, outcomes })
-
-  await page.waitForSelector('.game-winners', { timeout: 20_000 })
-  await page.waitForTimeout(800) // let the result finish fading in
-  await page.screenshot({ path: SHOTS + 'quick-draw-result.png' })
-  const result = (await page.textContent('.game-screen')).replace(/\s+/g, ' ')
-  check('faster side wins: the winners and points are named', /Rayhan & Bot Ben win!\s*\+25 points each/.test(result), result)
-  check('MVP is the fastest draw', /MVP: Rayhan \(you\) · \d+ ms draw/.test(result), result)
-  await projector.waitForSelector('.battle-winners', { timeout: 10_000 })
-  check('projector shows the result', /Rayhan & Bot Ben win!/.test(await projector.textContent('.battle-winners')))
-  check('no console errors', page.errors.length === 0 && projector.errors.length === 0, [...page.errors, ...projector.errors])
-  await page.evaluate(() => clearInterval(window.__idle))
-  await projector.context().close()
-  await page.context().close()
-}
-
-async function needleRainScenario(browser) {
-  console.log('\n# Needle Rain (1 bot already in; joining starts a short shared storm)')
-  const page = await newPhone(browser, NEEDLE_SPOT)
-  await page.waitForSelector('.bottom-nav')
-  await page.evaluate(() => {
-    window.history.pushState({}, '', '/game/needle-drop')
-    window.dispatchEvent(new PopStateEvent('popstate'))
-  })
-  await page.waitForSelector('.needle-record', { timeout: 10_000 })
-  check('lobby shows the practice record', /Record to beat: Bot Ana · 12/.test(await page.textContent('.needle-record')))
-  await page.click('text=Join the Needle Rain')
-  await page.waitForSelector('.needle-field', { timeout: 10_000 })
-  await page.keyboard.down('ArrowRight')
-  await page.waitForSelector('.needle-result', { timeout: 25_000 })
-  await page.keyboard.up('ArrowRight')
-  const state = await (await fetch(`${MOCK}/__state`)).json()
-  const claims = state.claims.filter((c) => c.drop_id === 'needle-drop')
-  const mine = state.gamePlayers.find((gp) => gp.drop_id === 'needle-drop' && !gp.player_id.startsWith('bot'))
-  const drop = state.drops.find((d) => d.id === 'needle-drop')
-  check('one payout, the drop points, and the drop is claimed', claims.length === 1 && claims[0].points === 40 && drop.status === 'claimed', { claims, status: drop.status })
-  check('stored dodges stay inside the cap', mine.dodges <= 32, mine)
-  check('no console errors', page.errors.length === 0, page.errors)
-  await page.context().close()
-}
-
-async function landmarkScenario(browser) {
-  console.log('\n# Point to the Landmark (3 bots in the lobby; joining makes 4; 3 rounds)')
-  const spot = { lat: OLD_MAIN_LAWN.lat, lng: OLD_MAIN_LAWN.lng - 30 / (M_PER_DEG_LAT * Math.cos((OLD_MAIN_LAWN.lat * Math.PI) / 180)) }
-  const page = await newPhone(browser, spot)
-  await page.waitForSelector('.bottom-nav')
-  // Behave like Android Chrome: no permission prompt, and a compass on deviceorientationabsolute. __aim(trueHeading)
-  // points the phone; the app adds State College's -10.5° declination to the magnetic reading, so undo it here.
-  // Installed before the app loads, on a full page load (see the Quick Draw scenario for why).
-  await page.addInitScript(() => {
-    Object.defineProperty(DeviceOrientationEvent, 'requestPermission', { value: undefined, configurable: true })
-    window.__heading = 180
-    window.__aim = (heading) => (window.__heading = heading)
-    window.__compass = setInterval(() => {
-      const magnetic = window.__heading + 10.5 + (Math.random() - 0.5)
-      window.dispatchEvent(new DeviceOrientationEvent('deviceorientationabsolute', { alpha: (((360 - magnetic) % 360) + 360) % 360, beta: 0, gamma: 0, absolute: true }))
-    }, 50)
-  })
-  await page.goto(`${BASE}/game/aim-drop`)
-  page.errors = [] // leaving the map page cancels its tile requests; only the game page's errors count
-  await page.waitForSelector('.game-kind')
-  check('lobby names the game', /Point to the Landmark/.test(await page.textContent('.game-kind')))
-
-  const projector = await newPhone(browser, OLD_MAIN_LAWN)
-  // Let the map finish loading first: leaving it mid-load races its fog layers into console errors.
-  await projector.waitForSelector('.bottom-nav')
-  await projector.goto(`${BASE}/battle/aim-drop`)
-  projector.errors = []
-  await projector.waitForSelector('.battle-title')
-
-  await page.click('text=Join Point to the Landmark')
-  await page.waitForSelector('.calibrate', { timeout: 10_000 })
-  check('after joining, it asks for a figure-8 calibration', /figure 8/.test(await page.textContent('.calibrate')))
-  await page.click('.calibrate button')
-
-  const rounds = async () =>
-    (await (await fetch(`${MOCK}/rest/v1/rpc/get_game_state`, { method: 'POST', body: JSON.stringify({ p_drop_id: 'aim-drop' }) })).json()).rounds
-  const offBy = [0, 20, 0]
-  const shown = []
-  let projectorReveal = Promise.resolve()
-  for (const round of [1, 2, 3]) {
-    await page.waitForFunction((r) => {
-      const screen = document.querySelector('.aim-screen')
-      return screen?.dataset.stage === 'pointing' && screen.querySelector('.draw-round')?.textContent === `Round ${r} of 3`
-    }, round, { timeout: 20_000 })
-    const target = (await rounds())[round - 1]
-    if (round === 1) {
-      // Reading the landmark's name with the phone held still must not lock in wherever it happens to face.
-      await page.waitForTimeout(2500)
-      check("holding still without turning doesn't lock", !/Locked in/.test(await page.textContent('.aim-status')))
-    }
-    // Turn like a player: swing past (120° away) and back, so the phone always turns, wherever it started.
-    await page.evaluate((h) => window.__aim((h + 120) % 360), target.bearing)
-    await page.waitForTimeout(400)
-    await page.evaluate((h) => window.__aim(h), (target.bearing + offBy[round - 1]) % 360)
-    check(`round ${round} names the landmark (${target.landmark.name})`, (await page.textContent('.aim-target')) === target.landmark.name)
-    const early = await page.waitForSelector('text=Locked in', { timeout: 5_000 }).then(
-      () => true,
-      async () => {
-        const seen = await page.evaluate(() => ({ status: document.querySelector('.aim-status')?.textContent, dial: document.querySelector('.aim-dial')?.getAttribute('aria-label'), aimed: window.__heading }))
-        console.log(`INFO round ${round}: no early lock; target ${target.bearing.toFixed(1)}°, phone ${JSON.stringify(seen)}`)
-        // A time-out lock goes straight to the reveal, so wait for that instead of "Locked in".
-        await page.waitForSelector('.aim-screen[data-stage="reveal"]', { timeout: 4_000 })
-        return false
-      },
-    )
-    check(`round ${round} locks early once held steady`, early)
-    if (round === 1) await page.screenshot({ path: SHOTS + 'landmark-locked.png' })
-    await page.evaluate(() => window.__aim(window.__heading + 90)) // turning after the lock changes nothing
-    await page.waitForSelector('.aim-screen[data-stage="reveal"]', { timeout: 6_000 })
-    shown.push((await page.textContent('.game-hero')).replace(/\s+/g, ' '))
-    if (round === 1) {
-      await page.screenshot({ path: SHOTS + 'landmark-reveal.png' })
-      // Checked alongside the phone: the slow software-rendered projector mustn't make the phone miss round 2.
-      projectorReveal = projector
-        .waitForFunction(() => {
-          const count = (selector) => document.querySelectorAll(`.landmark-map ${selector}`).length
-          return count('.lm-arrow') === 4 && { arrows: 4, trueLine: count('.lm-true'), target: count('.lm-target'), buildings: count('.lm-building') }
-        }, null, { timeout: 8_000 })
-        .then(async (handle) => {
-          const map = await handle.jsonValue()
-          check('projector reveal: true line, landmark, real buildings, and all 4 arrows', map.trueLine === 1 && map.target === 1 && map.buildings > 20, map)
-          await projector.screenshot({ path: SHOTS + 'landmark-projector.png' })
-        })
-    }
-  }
-  await projectorReveal
-  check(`the phone shows each round's error (${shown.map((x) => x.match(/\d+°\s*off/)?.[0]).join(', ')})`, shown.every((x) => /\d+°\s*off/.test(x)), shown)
-  const state = await (await fetch(`${MOCK}/__state`)).json()
-  const mine = state.results.filter((r) => r.drop_id === 'aim-drop' && !r.player_id.startsWith('bot')).sort((a, b) => a.round - b.round)
-  check('the server scored my headings against the true bearing (~0°, ~20°, ~0°)', mine.length === 3 && mine[0].value < 3 && Math.abs(mine[1].value - 20) < 3 && mine[2].value < 3, mine)
-
-  await page.waitForSelector('.game-winners', { timeout: 20_000 })
-  await page.waitForTimeout(800) // let the result finish fading in
-  await page.screenshot({ path: SHOTS + 'landmark-result.png' })
-  const result = (await page.textContent('.game-screen')).replace(/\s+/g, ' ')
-  check('closer side wins: the winners and points are named', /Rayhan & Bot Ben win!\s*\+35 points each/.test(result), result)
-  check('MVP is the most accurate point', /MVP: Rayhan \(you\) · \d+° off/.test(result), result)
-  await projector.waitForSelector('.battle-winners', { timeout: 10_000 })
-  check('projector shows the result', /Rayhan & Bot Ben win!/.test(await projector.textContent('.battle-winners')))
-  check('no console errors', page.errors.length === 0 && projector.errors.length === 0, [...page.errors, ...projector.errors])
-  await page.evaluate(() => clearInterval(window.__compass))
-  await projector.context().close()
   await page.context().close()
 }
 
@@ -834,13 +662,9 @@ const browser = await chromium.launch({
 })
 try {
   await mapScenario(browser)
-  await photoHuntScenario(browser)
-  await shakeOffScenario(browser)
-  await quickDrawScenario(browser)
-  await needleRainScenario(browser)
-  await landmarkScenario(browser)
   await searchScenario(browser)
   await campusEventsScenario(browser)
+  await clubsScenario(browser)
   await meetupScenario(browser)
 } catch (e) {
   failures++

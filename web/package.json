@@ -12,10 +12,9 @@
     "import-events": "node scripts/import-discover-events.mjs",
     "sync-events": "node --disable-warning=ExperimentalWarning scripts/sync-discover-events.mjs",
     "seed-events": "node scripts/seed-event-drops.mjs",
-    "test-gemini": "node --disable-warning=ExperimentalWarning scripts/test-gemini.ts",
     "test:sql": "node tests/sql/run.mjs",
-    "test:api": "node --disable-warning=ExperimentalWarning tests/api/verify-photo.test.mjs && node --disable-warning=ExperimentalWarning tests/api/search-events.test.mjs && node --disable-warning=ExperimentalWarning tests/api/sync-events.test.mjs",
-    "test:unit": "node --disable-warning=ExperimentalWarning tests/unit/interests.test.mjs",
+    "test:api": "node --disable-warning=ExperimentalWarning tests/api/search-events.test.mjs && node --disable-warning=ExperimentalWarning tests/api/sync-events.test.mjs && node --disable-warning=ExperimentalWarning tests/api/club-insights.test.mjs",
+    "test:unit": "node --disable-warning=ExperimentalWarning tests/unit/interests.test.mjs && node --disable-warning=ExperimentalWarning tests/unit/club-insights.test.mjs",
     "test:e2e": "node tests/e2e/run.mjs",
     "test": "npm run test:unit && npm run test:sql && npm run test:api && npm run test:e2e",
     "mock": "node tests/mock/supabase.mjs"
