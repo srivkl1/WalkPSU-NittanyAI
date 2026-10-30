@@ -196,7 +196,8 @@ async function mapScenario(browser) {
   })
   await page.waitForTimeout(800)
   await page.touchscreen.tap(oldMain.x, oldMain.y)
-  await page.waitForTimeout(400)
+  // The target dot appears on the map's next repaint, which can lag on software WebGL.
+  await page.waitForFunction(() => window.__walkpsuMap.queryRenderedFeatures({ layers: ['admin-target'] }).length > 0, null, { timeout: 5000 }).catch(() => {})
   const admin = await page.evaluate(() => ({
     where: document.querySelector('main section > p.muted.footnote')?.textContent,
     title: document.querySelector('form input.input')?.value,
@@ -272,8 +273,11 @@ async function searchScenario(browser) {
   await page.click('.search-result:has-text("Lawn Picnic")')
   await page.waitForSelector('.drop-sheet:not(.search-sheet):not(.event-sheet) h3:has-text("Lawn Picnic")', { timeout: 5000 })
   check('a result you can check in at opens the drop’s own card', /Check in/.test(await page.textContent('.drop-sheet:not(.search-sheet):not(.event-sheet)')))
-  const glowAfter = await page.evaluate(() => [...new Set(window.__walkpsuMap.queryRenderedFeatures({ layers: ['buildings-active'] }).map((f) => f.properties.num))])
-  check('the searched building stops glowing once its card closes', !glowAfter.includes('0003000'), glowAfter)
+  // The highlight clears on the map's next repaint, which can lag the card on software WebGL, so wait for it.
+  const glowCleared = await page
+    .waitForFunction(() => !window.__walkpsuMap.queryRenderedFeatures({ layers: ['buildings-active'] }).some((f) => f.properties.num === '0003000'), null, { timeout: 5000 })
+    .then(() => true, () => false)
+  check('the searched building stops glowing once its card closes', glowCleared)
 
   await page.click('.search-pill')
   await page.waitForSelector('.search-sheet input')

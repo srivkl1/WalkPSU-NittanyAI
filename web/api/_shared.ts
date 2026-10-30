@@ -3,8 +3,12 @@ import type { Database } from '../src/lib/database.types.ts'
 
 // Shared by the functions in web/api. The leading underscore keeps Vercel from serving this file as an endpoint.
 
-// Gemini often answers 503 "high demand", and models get retired, so retry once, then fall back to other models.
-const GEMINI_ATTEMPTS = ['gemini-flash-latest', 'gemini-flash-latest', 'gemini-3.8-flash', 'gemini-flash-lite-latest']
+// Which models to try, in order. The lite model answers search's ~300-event prompt in 1–2 s; gemini-flash-latest took
+// 13 s to over 55 s for the same prompt (Oct 2026), too slow for a player waiting. So lite first, the full model if
+// lite is busy or retired, then lite once more. A busy, slow, or missing model just moves on to the next one.
+const GEMINI_ATTEMPTS = ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-flash-lite-latest']
+/** One attempt's share of the budget, so a model that hangs can't use all of it. GEMINI_ATTEMPT_MS overrides it in tests. */
+const GEMINI_ATTEMPT_MS = Number(process.env.GEMINI_ATTEMPT_MS) || 12_000
 /**
  * How long one askGeminiJson call may take, retries included. Vercel stops a function at 60 s (vercel.json) and the
  * player then gets no answer at all, so Gemini must give up well before that and leave time for a fallback (search's
@@ -72,11 +76,14 @@ export async function signedInPlayer(request: Request, action: string): Promise<
 }
 
 type Part = { text: string } | { inline_data: { mime_type: string; data: string } }
+/** What generateContent sends back: an answer, or an error with Google's status (e.g. RESOURCE_EXHAUSTED). */
+type GeminiBody = { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { status?: string } }
 
 /**
  * Asks Gemini for JSON matching `schema`. `who` names the feature in user-facing errors ("The photo checker").
- * Gives up after `budgetMs` in total (a slow Gemini counts as busy). Logs only the HTTP status or the timeout on
- * failure, never the request (which can hold a player's photo or search text).
+ * Tries GEMINI_ATTEMPTS in order, each for at most GEMINI_ATTEMPT_MS, and gives up after `budgetMs` in total (then
+ * it's busy). Logs only each failure's HTTP status or timeout and the model, never the request (which can hold a
+ * player's photo or search text).
  */
 export async function askGeminiJson<T>(parts: Part[], schema: object, who: string, budgetMs = GEMINI_BUDGET_MS): Promise<T> {
   const request = JSON.stringify({
@@ -85,56 +92,47 @@ export async function askGeminiJson<T>(parts: Part[], schema: object, who: strin
   })
   const key = env('GEMINI_API_KEY')
   const deadline = Date.now() + budgetMs
-  const timedOut = (model: string) => {
-    console.error(`Gemini error timeout after ${Math.round(budgetMs / 1000)} s (${model})`)
-    return new GeminiError('busy', who)
-  }
 
-  let response: Response | undefined
-  let model = GEMINI_ATTEMPTS[0]
-  try {
-    for (const [i, next] of GEMINI_ATTEMPTS.entries()) {
-      model = next
-      // No time left for another try: report the last answer (or the timeout, if there was none).
-      if (i > 0 && deadline - Date.now() < 2000) break
-      if (i > 0) await new Promise((resolve) => setTimeout(resolve, 1000))
+  for (const [i, model] of GEMINI_ATTEMPTS.entries()) {
+    const left = deadline - Date.now()
+    // Too little time for another real try (2 s, or half an attempt if attempts are shorter).
+    if (i > 0 && left < Math.min(2000, GEMINI_ATTEMPT_MS / 2)) break
+    const started = Date.now()
+    let response: Response
+    let body: GeminiBody | null
+    try {
       response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
         body: request,
-        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+        // Covers the body too, which arrives under the same signal.
+        signal: AbortSignal.timeout(Math.max(1, Math.min(left, GEMINI_ATTEMPT_MS))),
       })
-      // A bad request, bad key, or exhausted billing fails the same way on every model. Anything else (busy, retired)
-      // is worth another try.
-      if (response.ok || [400, 401, 402, 403].includes(response.status)) break
+      body = (await response.json().catch((e: Error) => {
+        if (e.name === 'TimeoutError' || e.name === 'AbortError') throw e
+        return null
+      })) as GeminiBody | null
+    } catch (e) {
+      const timeout = (e as Error).name === 'TimeoutError' || (e as Error).name === 'AbortError'
+      // A timeout or a failed network (DNS, reset) is as good as busy: try the next model.
+      console.error(`Gemini error ${timeout ? `timeout after ${Math.round((Date.now() - started) / 1000)} s` : (e as Error).message} (${model})`)
+      continue
     }
-    if (!response) throw timedOut(model)
-    if (!response.ok) {
-      // Google's error status (e.g. RESOURCE_EXHAUSTED) says why, without echoing the request back.
-      const reason = ((await response.json().catch(() => null)) as { error?: { status?: string } } | null)?.error?.status ?? ''
-      console.error(`Gemini error ${response.status} ${reason} (${model})`.replace(/\s+/g, ' '))
-      // 402 is prepaid credits running out; 429 and 5xx clear up on their own.
-      const busy = response.status === 429 || response.status >= 500
-      throw new GeminiError(busy ? 'busy' : 'unavailable', who)
-    }
-  } catch (e) {
-    if (e instanceof GeminiError) throw e
-    if ((e as Error).name === 'TimeoutError' || (e as Error).name === 'AbortError') throw timedOut(model)
-    // The network itself failed (DNS, reset): as good as busy.
-    console.error(`Gemini error ${(e as Error).message} (${model})`)
-    throw new GeminiError('busy', who)
-  }
 
-  // The body arrives under the same deadline.
-  const result = (await response.json().catch((e: Error) => {
-    if (e.name === 'TimeoutError' || e.name === 'AbortError') throw timedOut(model)
-    throw new GeminiError('garbled', who)
-  })) as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
-  const text = result.candidates?.[0]?.content?.parts?.find((part) => part.text)?.text
-  if (!text) throw new GeminiError('garbled', who)
-  try {
-    return JSON.parse(text) as T
-  } catch {
-    throw new GeminiError('garbled', who)
+    if (response.ok) {
+      const text = body?.candidates?.[0]?.content?.parts?.find((part) => part.text)?.text
+      if (!text) throw new GeminiError('garbled', who)
+      try {
+        return JSON.parse(text) as T
+      } catch {
+        throw new GeminiError('garbled', who)
+      }
+    }
+    // Google's error status (e.g. RESOURCE_EXHAUSTED) says why, without echoing the request back.
+    console.error(`Gemini error ${response.status} ${body?.error?.status ?? ''} (${model})`.replace(/\s+/g, ' '))
+    // A bad request, bad key, or exhausted billing (402) fails the same way on every model. Busy (429, 5xx) or retired
+    // (404) is worth trying the next one.
+    if ([400, 401, 402, 403].includes(response.status)) throw new GeminiError('unavailable', who)
   }
+  throw new GeminiError('busy', who)
 }

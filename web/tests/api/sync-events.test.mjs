@@ -111,6 +111,8 @@ try {
   const cache = Object.fromEntries((await state()).discoverLocations.map((l) => [l.location, l.building_num]))
   check('every answer is cached by normalized location', cache['340 hhd'] === HHD && cache['sunset park'] === null && cache['mystery room'] === null && Object.keys(cache).length === 3, cache)
 
+  // Drop busy answers no model used (the number of models tried isn't this test's business).
+  fake.gemini.length = 0
   fake.geminiCalls.length = 0
   r = await call()
   check('the next sync asks Gemini nothing (all cached)', r.status === 200 && fake.geminiCalls.length === 0 && r.body.gemini === 'not needed', r.body)
@@ -123,6 +125,8 @@ try {
   check('Gemini busy: the sync still succeeds', r.status === 200 && r.body.gemini === 'busy' && r.body.events === 7, r.body)
   check('the new event is stored, unplaced for now', (await eventById('new'))?.building === null)
   check('and its location isn’t cached', !(await state()).discoverLocations.some((l) => l.location === 'hhd 120'))
+  // Drop busy answers no model used (the number of models tried isn't this test's business).
+  fake.gemini.length = 0
   fake.geminiCalls.length = 0
   fake.gemini.push({ 'HHD 120': HHD })
   r = await call()
@@ -130,6 +134,8 @@ try {
 
   delete process.env.GEMINI_API_KEY
   fake.discover = [...LISTINGS, listing('new2', 'Somewhere 9')]
+  // Drop busy answers no model used (the number of models tried isn't this test's business).
+  fake.gemini.length = 0
   fake.geminiCalls.length = 0
   r = await call()
   check('no GEMINI_API_KEY: syncs without placing new locations', r.status === 200 && r.body.gemini === 'skipped (no GEMINI_API_KEY)' && fake.geminiCalls.length === 0, r.body)
