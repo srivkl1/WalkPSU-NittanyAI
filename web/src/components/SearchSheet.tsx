@@ -209,7 +209,6 @@ function SearchSheet({ open, onOpenChange, drops, dropById, dropFor, onMatched, 
                               <span className="chip search-drop-chip" style={{ '--player': DROP_TYPES[drop.type]?.color } as CSSProperties}>
                                 <span className="color-dot" aria-hidden />
                                 {DROP_TYPES[drop.type]?.label ?? 'Drop'}
-                                {drop.type !== 'meetup' && ` · ${drop.points} pts`}
                               </span>
                             </span>
                             <ChevronIcon className="chevron" />
@@ -249,7 +248,7 @@ function EventRow({ result, drop, onPick }: { result: EventResult; drop: DropRow
             {eventTime(result.starts_at, result.ends_at)} · {result.building?.name ?? result.location ?? 'Location TBA'}
           </span>
           {result.reason && <span className="search-reason footnote">{result.reason}</span>}
-          {drop && <span className="chip claimable-chip">Claimable · {drop.points} pts</span>}
+          {drop && <span className="chip claimable-chip">Check in here</span>}
         </span>
         <ChevronIcon className="chevron" />
       </button>

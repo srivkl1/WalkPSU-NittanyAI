@@ -45,43 +45,6 @@ export async function uploadHintPhoto(file: File) {
   return supabase.storage.from('drop-hints').getPublicUrl(path).data.publicUrl
 }
 
-export type NewPhotoHunt = Pick<NewDrop, 'title' | 'lat' | 'lng' | 'points' | 'building_num' | 'expires_at'> & {
-  hint_photo_url: string
-  twist: string
-}
-
-/** Admin only. The server stores the exact spot privately and publishes only a search circle around it. */
-export async function createPhotoHunt(hunt: NewPhotoHunt) {
-  return unwrap(
-    await supabase.rpc('create_photo_hunt', {
-      p_title: hunt.title,
-      p_lat: hunt.lat,
-      p_lng: hunt.lng,
-      p_hint_photo_url: hunt.hint_photo_url,
-      p_twist: hunt.twist,
-      p_points: hunt.points,
-      p_building_num: hunt.building_num,
-      p_expires_at: hunt.expires_at,
-    }),
-  )
-}
-
-/** Mirrors VerifyPhotoResponse in api/verify-photo.ts. */
-export type PhotoVerdict = { match: true; points: number; reason: string } | { match: false; reason: string }
-
-/** Sends a photo-hunt photo to /api/verify-photo, which checks GPS, asks Gemini, and records the claim on a match. */
-export async function submitHuntPhoto(dropId: string, image: string, position: { lat: number; lng: number }) {
-  const token = await getAccessToken()
-  const response = await fetch('/api/verify-photo', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) },
-    body: JSON.stringify({ dropId, image, ...position }),
-  })
-  const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(body.error ?? `Photo check failed (${response.status})`)
-  return body as PhotoVerdict
-}
-
 /** A Penn State Discover event picked by /api/search-events. Mirrors EventResult in api/search-events.ts. */
 export type EventResult = {
   id: string
@@ -167,7 +130,19 @@ export async function getGoing(eventId: string): Promise<Going> {
 
 /** RSVPs me on or off. Returns the event's new going count. */
 export async function setGoing(eventId: string, going: boolean) {
-  return unwrap(await supabase.rpc('set_going', { p_event_id: eventId, p_going: going }))
+  const count = unwrap(await supabase.rpc('set_going', { p_event_id: eventId, p_going: going }))
+  for (const notify of activityListeners) notify()
+  return count
+}
+
+const activityListeners = new Set<() => void>()
+
+/** Calls `onChange` after I RSVP or check in (so reminders and cards update at once). */
+export function subscribeToMyActivity(onChange: () => void) {
+  activityListeners.add(onChange)
+  return () => {
+    activityListeners.delete(onChange)
+  }
 }
 
 /** A live drop as search sees it: only what the map already shows, never its coordinates. */
@@ -210,56 +185,15 @@ export type ClaimProof = { lat: number; lng: number } | { code: string }
 
 const proofArgs = (proof: ClaimProof) => ('code' in proof ? { p_code: proof.code } : { p_lat: proof.lat, p_lng: proof.lng })
 
-/** Server checks the drop is active and unexpired, and that the player is within claim_radius_m() or has its QR code. */
+/**
+ * Checks me in at a drop: the server checks it's active and unexpired, and that I'm within claim_radius_m() or have
+ * its QR code. Once per player; the drop stays open for everyone else.
+ */
 export async function claimDrop(dropId: string, proof: ClaimProof) {
   return unwrap(await supabase.rpc('claim_drop', { p_drop_id: dropId, ...proofArgs(proof) }))
 }
 
-export async function getGameState(dropId: string) {
-  return unwrap(await supabase.rpc('get_game_state', { p_drop_id: dropId }))
-}
-
-/** Same proof as claiming. Rejoining is a no-op; joining closes when the game starts. */
-export async function joinGame(dropId: string, proof: ClaimProof) {
-  unwrap(await supabase.rpc('join_game', { p_drop_id: dropId, ...proofArgs(proof) }))
-}
-
-/** Admin only. Starts the countdown (needs 2+ players). */
-export async function startGame(dropId: string) {
-  unwrap(await supabase.rpc('start_game', { p_drop_id: dropId }))
-}
-
-/** Reports a running shake total; the server caps it to a human rate and returns the stored value. */
-export async function submitShakes(dropId: string, count: number) {
-  return unwrap(await supabase.rpc('submit_shakes', { p_drop_id: dropId, p_count: count }))
-}
-
-/** Reports a running dodge total. The server caps it, and a hit freezes it. */
-export async function submitDodges(dropId: string, count: number, eliminated = false) {
-  return unwrap(await supabase.rpc('submit_dodges', { p_drop_id: dropId, p_count: count, p_eliminated: eliminated }))
-}
-
-/** Records a solo practice dodge count. Pays nothing and leaves the drop open. */
-export async function submitGhost(dropId: string, count: number) {
-  return unwrap(await supabase.rpc('submit_ghost', { p_drop_id: dropId, p_count: count }))
-}
-
-/** Quick Draw: a round's reaction time measured on this phone, or null for a flick before the signal. */
-export async function submitReaction(dropId: string, round: number, reactionMs: number | null) {
-  return unwrap(await supabase.rpc('submit_reaction', { p_drop_id: dropId, p_round: round, ...(reactionMs !== null && { p_reaction_ms: reactionMs }) }))
-}
-
-/** Point to the Landmark: a round's locked heading (degrees from true north). The server scores the error. */
-export async function submitHeading(dropId: string, round: number, heading: number) {
-  return unwrap(await supabase.rpc('submit_heading', { p_drop_id: dropId, p_round: round, p_heading: heading }))
-}
-
-/** Idempotent; any participant may call it once the submit grace period has passed. */
-export async function finishGame(dropId: string) {
-  return unwrap(await supabase.rpc('finish_game', { p_drop_id: dropId }))
-}
-
-/** Admin only (enforced by RLS). Maps drop id to its QR claim code. */
+/** Admin only (enforced by RLS). Maps drop id to its QR check-in code. */
 export async function getClaimCodes() {
   const rows = unwrap(await supabase.from('drop_secrets').select('*'))
   return new Map(rows.map((row) => [row.drop_id, row.claim_code]))
@@ -269,14 +203,103 @@ export function claimUrl(dropId: string, code: string) {
   return `${window.location.origin}/claim/${dropId}?key=${code}`
 }
 
-/** Any player: pins "volleyball here right now" at my position for `minutes` (15–180). No points. */
+/** Checks me in to a campus event: its door QR code, or GPS at its building. True the first time, false after. */
+export async function checkInEvent(eventId: string, proof: ClaimProof) {
+  const first = unwrap(await supabase.rpc('check_in_event', { p_event_id: eventId, ...proofArgs(proof) }))
+  for (const notify of activityListeners) notify()
+  return first
+}
+
+/** Ids of the events I've RSVP'd to and checked in to (RLS returns only my own rows). */
+export async function getMyEventActivity() {
+  const [rsvps, checkins] = await Promise.all([supabase.from('event_rsvps').select('event_id'), supabase.from('event_checkins').select('event_id')])
+  return { going: new Set(unwrap(rsvps).map((r) => r.event_id)), checkedIn: new Set(unwrap(checkins).map((r) => r.event_id)) }
+}
+
+/** Organizers (and admins): an event's door QR code. */
+export async function getEventCheckinCode(eventId: string) {
+  return unwrap(await supabase.rpc('event_checkin_code', { p_event_id: eventId }))
+}
+
+export function eventCheckinUrl(eventId: string, code: string) {
+  return `${window.location.origin}/checkin/${encodeURIComponent(eventId)}?key=${code}`
+}
+
+/** The clubs I run, and my requests to run others (RLS: my own rows only; admins see all). */
+export async function getMyClubs(playerId: string) {
+  const [organizers, requests] = await Promise.all([
+    supabase.from('club_organizers').select('*').eq('player_id', playerId).order('organization'),
+    supabase.from('organizer_requests').select('*').eq('player_id', playerId).order('created_at', { ascending: false }),
+  ])
+  return { clubs: unwrap(organizers).map((o) => o.organization), requests: unwrap(requests) }
+}
+
+/** Every club with an event coming up, A to Z (for admins, who can open any club's dashboard). */
+export async function getClubNames() {
+  const rows = unwrap(
+    await supabase.from('discover_events').select('organization').eq('cancelled', false).gt('ends_at', new Date().toISOString()).limit(1000),
+  )
+  return [...new Set(rows.flatMap((r) => (r.organization ? [r.organization] : [])))].sort((a, b) => a.localeCompare(b))
+}
+
+/** "I run this club." Asking again while a request waits returns that request. */
+export async function requestOrganizer(organization: string, note: string) {
+  return unwrap(await supabase.rpc('request_organizer', { p_organization: organization, p_note: note }))
+}
+
+/** Admins: every waiting request, oldest first, with who asked. */
+export async function getPendingOrganizerRequests() {
+  const requests = unwrap(await supabase.from('organizer_requests').select('*').eq('status', 'pending').order('created_at'))
+  if (requests.length === 0) return []
+  const players = unwrap(await supabase.from('players').select('id, display_name').in('id', [...new Set(requests.map((r) => r.player_id))]))
+  const names = new Map(players.map((p) => [p.id, p.display_name]))
+  return requests.map((r) => ({ ...r, display_name: names.get(r.player_id) ?? 'A player' }))
+}
+
+/** Admins only. */
+export async function decideOrganizerRequest(requestId: string, approve: boolean) {
+  return unwrap(await supabase.rpc('decide_organizer_request', { p_request_id: requestId, p_approve: approve }))
+}
+
+/** Organizers (and admins): a club's numbers. Counts only. */
+export async function getClubStats(organization: string) {
+  return unwrap(await supabase.rpc('club_stats', { p_organization: organization }))
+}
+
+/** A suggested time and place for a club's next event. Mirrors Suggestion in api/club-insights.ts. */
+export type ClubSuggestion = { starts_at: string; building: { num: string; name: string } | null; reason: string }
+/** Mirrors ClubInsights in api/club-insights.ts. `mode` is "stats" when Gemini couldn't answer. */
+export type ClubInsights = {
+  /** Distinct players interested in the club's upcoming events: RSVP'd, or their interests or major match. */
+  interested: number
+  /** Per upcoming event id. */
+  interestedByEvent: Record<string, number>
+  suggestions: ClubSuggestion[]
+  mode: 'ai' | 'stats'
+}
+
+/** /api/club-insights: who's interested (counts) and AI suggestions for the next event. */
+export async function getClubInsights(organization: string): Promise<ClubInsights> {
+  const token = await getAccessToken()
+  const response = await fetch('/api/club-insights', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) },
+    body: JSON.stringify({ organization }),
+  }).catch(() => null)
+  if (!response) throw new Error('Couldn’t reach the server. Check your connection')
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body.error ?? 'Suggestions are unavailable right now')
+  return body as ClubInsights
+}
+
+/** Any player: pins "volleyball here right now" at my position for `minutes` (15–180). */
 export async function createMeetup(meetup: { text: string; lat: number; lng: number; minutes: number; buildingNum: string | null }) {
   return unwrap(
     await supabase.rpc('create_meetup', { p_text: meetup.text, p_lat: meetup.lat, p_lng: meetup.lng, p_minutes: meetup.minutes, p_building_num: meetup.buildingNum }),
   )
 }
 
-/** Takes a drop off the map: admins any drop, players their own meetup. Points already earned stay. */
+/** Takes a drop off the map: admins any drop, players their own meetup. Its check-ins stay. */
 export async function closeDrop(dropId: string) {
   return unwrap(await supabase.rpc('close_drop', { p_drop_id: dropId }))
 }
@@ -291,22 +314,12 @@ export async function discoverArea(hexId: string) {
   return unwrap(await supabase.rpc('discover_area', { p_hex_id: hexId }))
 }
 
-export async function getLeaderboard() {
-  return unwrap(
-    await supabase
-      .from('player_scores')
-      .select('*')
-      .order('points', { ascending: false })
-      .order('display_name'),
-  )
-}
-
 /** The server's GPS claim radius in meters, so the map draws exactly what claim_drop enforces. */
 export async function getClaimRadius() {
   return unwrap(await supabase.rpc('claim_radius_m'))
 }
 
-type RealtimeTable = 'drops' | 'claims' | 'games' | 'game_players' | 'game_results'
+type RealtimeTable = 'drops' | 'claims'
 type RowOf<T extends RealtimeTable> = Database['public']['Tables'][T]['Row']
 
 /** Calls onChange for every insert/update/delete on a Realtime-enabled table. Returns an unsubscribe fn. */
@@ -326,7 +339,6 @@ export function subscribeToTable<T extends RealtimeTable>(
   }
 }
 
-/** Claims flip a drop's status, so this also fires on every claim. */
 export function subscribeToDrops(onChange: (drop: DropRow, event: 'INSERT' | 'UPDATE' | 'DELETE') => void) {
   return subscribeToTable('drops', onChange)
 }

@@ -2,7 +2,7 @@
 
 Source of truth: the files in `supabase/migrations/`, applied in order. TypeScript mirror: `web/src/lib/database.types.ts`. Call everything through `web/src/lib/api.ts`.
 
-Players compete as **individuals**. There are no permanent teams anywhere in the data model (migration `20261024020000_individual_players.sql` removed them). Buildings aren't owned or captured (migration `20261024040000_remove_building_capture.sql` removed that).
+There are no teams, points, or games in the data model anymore. Teams went in `20261024020000_individual_players.sql`, building capture in `20261024040000_remove_building_capture.sql`, and mini-games, photo hunts, and points in `20261029000000_remove_games_and_points.sql`. A drop is now a check-in or a meetup, and a check-in counts as attendance.
 
 ## Identity
 
@@ -12,6 +12,8 @@ A user is an **admin** if either:
 
 - the Auth0 ID token has `app_role: "admin"` (set by the Auth0 Action from the user's Auth0 roles), or
 - their `players.is_admin` is `true` (set by hand in the Supabase dashboard; this is how admins work in fallback mode).
+
+A player is an **organizer** of a club once an admin approves their request (`club_organizers`). Admins can do everything an organizer can, for every club.
 
 ## Tables
 
@@ -34,36 +36,32 @@ Every signed-in user can read all players. A player can insert and update only t
 | --- | --- | --- |
 | `id` | uuid | |
 | `title` | text | |
-| `type` | `minigame` \| `photo_hunt` \| `checkin` \| `meetup` | `meetup` = a player's social pin from `create_meetup` (no points) |
+| `type` | `checkin` \| `meetup` | `meetup` = a player's social pin from `create_meetup`. The enum still holds `minigame` and `photo_hunt` for old rows; a trigger refuses new ones |
 | `lat`, `lng` | double precision | |
-| `points` | integer | > 0, default 10 |
-| `status` | `active` \| `claimed` \| `expired` | default `active`; becomes `claimed` via `claim_drop` |
-| `hint_photo_url` | text | public URL in the `drop-hints` storage bucket. For photo hunts, the reference photo of the spot |
-| `twist` | text | photo hunts: what the player's photo must also show, e.g. "with a thumbs up" |
-| `search_radius_m` | integer | photo hunts: radius of the search circle shown before the first find |
-| `first_found_at` | timestamptz | photo hunts: when the first player found it. null = not found yet, so `lat`/`lng` is only the search circle's center |
-| `building_num` | text | PSU building number (`num` in `buildings.geojson`). null = open-ground drop. The map highlights a building while it hosts an active drop. Photo hunts keep it null until the first find |
+| `points` | integer | unused, left from the points system (default 10) |
+| `status` | `active` \| `claimed` \| `expired` | default `active`. Check-ins stay `active` as people check in; `claimed` appears only on old rows |
+| `hint_photo_url` | text | optional photo, public URL in the `drop-hints` storage bucket |
+| `building_num` | text | PSU building number (`num` in `buildings.geojson`). null = open-ground drop. The map highlights a building while it hosts an active drop |
 | `created_by` | uuid → `players` | |
 | `created_at` | timestamptz | |
-| `expires_at` | timestamptz | null = never. Past this time the drop can't be claimed even if `status` is still `active` |
+| `expires_at` | timestamptz | null = until cleared. Past this time nobody can check in even if `status` is still `active` |
 | `subtitle` | text | optional line under the title; the hosting organization for imported campus events |
 | `starts_at` | timestamptz | optional; when the event behind the drop begins. The drop card shows it with `expires_at` |
 | `source_id` | text | unique. Set only on drops seeded from campus events (`discover:<event id>`, by `web/scripts/seed-event-drops.mjs`); null for drops made in `/admin` |
-| `game` | `shake_off` \| `quick_draw` \| `landmark` \| `needle_rain` | `minigame` drops only: which game the lobby plays. A trigger sets `shake_off` when a minigame insert leaves it out and clears it on other types |
 
-Only admins can insert, update, or delete. Everyone signed in can read. Create photo hunts with `create_photo_hunt`, not a plain insert, so the spot stays hidden.
+Old columns from photo hunts and mini-games (`twist`, `search_radius_m`, `first_found_at`, `game`) are still there, unread. Only admins can insert, update, or delete. Everyone signed in can read.
 
-### `claims`
+### `claims` (check-ins at drops)
 
 | column | type | notes |
 | --- | --- | --- |
 | `id` | uuid | |
-| `drop_id` | uuid → `drops` | unique together with `player_id` |
-| `player_id` | uuid → `players` | who claimed it |
-| `points` | integer | what this claim earned. A trigger fills in the drop's `points` when an insert leaves it out (`claim_drop`, `finish_game`); `claim_photo_hunt` sets less for later finders |
+| `drop_id` | uuid → `drops` | unique together with `player_id`: one check-in per player per drop |
+| `player_id` | uuid → `players` | who checked in |
+| `points` | integer | unused, left from the points system |
 | `created_at` | timestamptz | |
 
-Read-only for clients. Rows come only from `claim_drop` (one claim per ordinary drop: it locks the drop and flips it to `claimed`), `finish_game` (one claim per winner of a Shake-Off or Quick Draw, or exactly one claim for a Needle Rain winner), and `claim_photo_hunt` (one claim per finder).
+Read-only for clients; rows come only from `claim_drop`. Old claims from games and photo hunts are kept. A check-in at a drop seeded from a campus event also checks the player in to that event (`event_checkins`, by a trigger).
 
 ### `drop_secrets`
 
@@ -71,58 +69,12 @@ Read-only for clients. Rows come only from `claim_drop` (one claim per ordinary 
 | --- | --- | --- |
 | `drop_id` | uuid → `drops` | primary key |
 | `claim_code` | text | 32-char random code encoded in the drop's QR |
-| `hunt_lat`, `hunt_lng` | double precision | photo hunts: the exact spot |
-| `hunt_building_num` | text | photo hunts: the spot's building, copied to `drops.building_num` on the first find |
 
-Created automatically by a trigger when a drop is inserted. **Only admins can read it**; players never see codes except by scanning. The QR encodes `https://<app>/claim/<drop_id>?key=<claim_code>`.
+Created automatically by a trigger when a drop is inserted. **Only admins can read it**; players never see codes except by scanning. The QR encodes `https://<app>/claim/<drop_id>?key=<claim_code>`. (Old photo hunts' hidden spots are in `hunt_lat`, `hunt_lng`, `hunt_building_num`.)
 
-### `games` (mini-games)
+### Old game tables
 
-One per `minigame` drop, created by the first `join_game`. Every kind (`drops.game`) shares this lobby, the join rules, and the side split.
-
-| column | type | notes |
-| --- | --- | --- |
-| `drop_id` | uuid → `drops` | primary key |
-| `seed` | text | random; decides sides, tie-breaks, and Quick Draw's signal moments. Hidden from `get_game_state`. Needle Rain ties use it too. It is not the storm |
-| `round_seed` | text | Needle Rain's public storm. Null until a start is scheduled, and `get_game_state` only returns it once `started_at` is set |
-| `ghost_seed` | text | practice-run storm. Never the live `round_seed` |
-| `ghost_dodges` | integer | best solo practice count, server-capped. Null until someone practices |
-| `ghost_player_id` | uuid → `players` | whose practice that is |
-| `created_at` | timestamptz | |
-| `started_at` | timestamptz | null until scheduled. The future time the game begins; the lobby closes then |
-| `finished_at` | timestamptz | set by `finish_game`. A practice run does not set it |
-| `winner_side` | `blue` \| `white` | Shake-Off and Quick Draw. Null for Needle Rain |
-| `winner_id` | uuid → `players` | Needle Rain's one winner |
-
-### `game_players`
-
-| column | type | notes |
-| --- | --- | --- |
-| `drop_id`, `player_id` | uuid | primary key |
-| `joined_at` | timestamptz | |
-| `shakes` | integer | the server-capped count from `submit_shakes` |
-| `dodges` | integer | Needle Rain. The server-capped count from `submit_dodges`. Not a reuse of `shakes` |
-| `eliminated` | boolean | Needle Rain. A hit freezes `dodges` |
-
-### `game_results` (timed games)
-
-| column | type | notes |
-| --- | --- | --- |
-| `drop_id`, `player_id`, `round` | uuid, uuid, smallint | primary key. The first submission for a round is final |
-| `value` | double precision | the round's score, lower is better. Quick Draw: reaction time in ms. Point to the Landmark: error in degrees (0–180). Null exactly when `false_start` |
-| `false_start` | boolean | Quick Draw: flicked before the signal, or under `min_reaction_ms` |
-| `heading` | double precision | Point to the Landmark: the locked true heading, [0, 360) |
-| `created_at` | timestamptz | |
-
-### `campus_landmarks`
-
-`num` (PSU building number, as in `buildings.geojson`), `name`, `lat`, `lng`: 15 well-known landmarks (Old Main, Beaver Stadium, the BJC, Pattee, the HUB, Rec Hall, the Creamery…) that Point to the Landmark asks for. Seeded by the migration; everyone signed in can read it, nobody can write.
-
-`games`, `game_players`, and `game_results` are read-only for clients and in the Realtime publication. Sides aren't stored: `game_sides(drop_id)` deals them from the seed once `started_at` is set, so every caller sees the same balanced split. Teams exist only inside one game.
-
-### `player_scores` (view)
-
-`player_id, display_name, color, points, claims` for every player. `points` is the sum of their claims' `points`. Runs with the caller's permissions. The leaderboard orders by points, then name.
+`games`, `game_players`, `game_results`, and `campus_landmarks` hold old mini-game data. Nothing reads or writes them, and the functions that did were dropped.
 
 ### `discovered_areas` (fog of war)
 
@@ -138,25 +90,36 @@ Primary key `(player_id, hex_id)`. Deliberately **no timestamps or coordinates**
 | column | type | notes |
 | --- | --- | --- |
 | `id` | text PK | Discover's event id; a seeded drop points here with `source_id = 'discover:<id>'` |
-| `title`, `organization`, `theme` | text | public listing facts only: no descriptions, organizer contacts, or attendees |
+| `title`, `organization`, `theme` | text | public listing facts only: no descriptions, organizer contacts, or attendees. `organization` is the club |
 | `categories` | text[] | |
+| `benefits` | text[] | Discover's `benefitNames` ("Free Food", "Free Stuff") |
 | `starts_at`, `ends_at` | timestamptz | |
 | `location` | text | as the organizer typed it |
 | `building` | jsonb | `{ num, name, lat, lng, matched_by }` (`location text`, `coordinates`, or `gemini`); null for online events and ones away from University Park |
 | `cancelled` | boolean | gone from a complete Discover fetch before it ended; cleared if it reappears |
 | `synced_at` | timestamptz | |
 
-Written only by `sync_discover_events`. RLS: signed-in players read every row; nobody writes. Events that ended over 30 days ago are pruned on each sync. Not in the Realtime publication (search reads it per request).
+Written only by `sync_discover_events`. RLS: signed-in players read every row; nobody writes. Events that ended over 30 days ago are pruned on each sync, **unless someone RSVP'd or checked in** (a club's history and second-visit rate need them). Not in the Realtime publication (search reads it per request).
 
 ### `player_profiles` (major and interests, private)
 
-`player_id` (PK, references `players`, cascade delete), `major` (null, or 1–80 characters), `interests` (text[], each one of the ids in `web/src/lib/interests.ts`'s `INTERESTS`, enforced by a check constraint; keep the two lists in step), `updated_at`. RLS: a player reads, inserts, and updates **only their own row**; nobody deletes (clear the fields instead); anon has nothing. Nothing else reads it: "For you" matching runs on the phone (`matchEvent`/`forYou`) against `discover_events`' `categories`, `theme`, `benefits`, and title words.
-
-`discover_events.benefits` (text[], added with this table) holds Discover's `benefitNames` ("Free Food", "Free Stuff"); `sync_discover_events` stores it.
+`player_id` (PK, references `players`, cascade delete), `major` (null, or 1–80 characters), `interests` (text[], each one of the ids in `web/src/lib/interests.ts`'s `INTERESTS`, enforced by a check constraint; keep the two lists in step), `updated_at`. RLS: a player reads, inserts, and updates **only their own row**; nobody deletes (clear the fields instead); anon has nothing. "For you" matching runs on the phone (`matchEvent`/`forYou`). The only other reader is `/api/club-insights`, which uses the service key to count how many profiles match a club's events and returns counts only.
 
 ### `event_rsvps` (WalkPSU's own "I'm going")
 
-`event_id` (references `discover_events`, cascade delete), `player_id` (references `players`, cascade delete), `created_at`. Primary key `(event_id, player_id)`. RLS: a player reads only their own rows; no direct writes for anyone (`set_going` writes). Others see only counts, through `event_going`, **never who is going**. Discover's own RSVP numbers (`rsvpTotal`) are deliberately not used.
+`event_id` (references `discover_events`, cascade delete), `player_id` (references `players`, cascade delete), `created_at`. Primary key `(event_id, player_id)`. RLS: a player reads only their own rows; no direct writes for anyone (`set_going` writes). Others see only counts, through `event_going` and `club_stats`, **never who is going**. Discover's own RSVP numbers (`rsvpTotal`) are deliberately not used.
+
+### `event_checkins` (who came to a campus event)
+
+`event_id` (references `discover_events`, cascade delete), `player_id` (references `players`, cascade delete), `created_at`. Primary key `(event_id, player_id)`: one per player per event. Written by `check_in_event` (the door QR code, or GPS at the building) and by a trigger when someone checks in at a drop seeded from the event. RLS: a player reads only their own rows; no direct writes. Organizers see counts only, through `club_stats`.
+
+### `event_secrets` (door QR codes)
+
+`event_id` (PK, references `discover_events`), `code` (32-char random). Made the first time an organizer opens the event's QR code. RLS on with no policies and no grants: only `event_checkin_code` and `check_in_event` touch it. The QR encodes `https://<app>/checkin/<event_id>?key=<code>`.
+
+### `club_organizers` and `organizer_requests`
+
+`club_organizers (organization, player_id, approved_at)`, primary key `(organization, player_id)`: who runs which club. `organizer_requests (id, organization, player_id, note ≤ 200 chars, status pending | approved | declined, created_at, decided_at)`, with at most one pending request per player per club. RLS on both: a player reads their own rows, admins read all; no direct writes (`request_organizer` and `decide_organizer_request` write).
 
 ### `discover_locations` (Gemini placement cache)
 
@@ -164,48 +127,39 @@ Written only by `sync_discover_events`. RLS: signed-in players read every row; n
 
 ## Functions
 
-- **`claim_drop(p_drop_id, p_lat?, p_lng?, p_code?) → claims`**. Claims a drop for the caller. It locks the drop row, so if two players tap at once exactly one wins. Proof is either the drop's QR `p_code` (any distance) or a GPS position within `claim_radius_m()`. It raises an error with a user-facing message when:
+- **`claim_drop(p_drop_id, p_lat?, p_lng?, p_code?) → claims`**. Checks the caller in at a drop. Proof is either the drop's QR `p_code` (any distance) or a GPS position within `claim_radius_m()`. One check-in per player; the drop stays `active` for everyone else. It raises an error with a user-facing message when:
   - the caller hasn't joined,
-  - the drop is gone, claimed, or expired,
+  - the drop is a meetup (nothing to check in to), an old game or hunt, gone, or expired,
   - the code is wrong,
   - there's no code and no position,
-  - there's no code and the caller is too far away.
+  - there's no code and the caller is too far away,
+  - the caller already checked in there.
 
   Client: `claimDrop(dropId, { lat, lng })` or `claimDrop(dropId, { code })`.
-- **Mini-game functions** (all keyed by the drop id; phases come from timestamps, so there's no server timer):
-  - `get_game_state(drop) → { server_now, kind, settings, game, players[], rounds[], results[] }`. One call per screen. `server_now` lets phones correct skewed clocks. `settings` is `minigame_settings(kind)`. `rounds` (Quick Draw, once a start is set) holds each round's `starts_at` and `signal_at`; Point to the Landmark's hold each round's `starts_at`, `landmark` (`num, name, lat, lng`), and true `bearing` from the drop. `results` holds every `game_results` row, including a heading when the game stored one. Needle Rain's `game` includes `round_seed` only after a start is set, plus the ghost record.
-  - `join_game(drop, lat?, lng?, code?)`. Same proof as claiming. Rejoining is a no-op. Joining closes at `started_at`. The Nth player (`auto_start_players`, 4 for Shake-Off, Quick Draw, and Point to the Landmark, 2 for Needle Rain) schedules the start `auto_start_delay_seconds` out. Scheduling a Needle Rain also sets `round_seed`.
-  - `start_game(drop)`. Admin only, needs 2+ players. Pulls the start in to `admin_start_delay_seconds` from now (5 s for Shake-Off, 3 s for Needle Rain).
-  - `submit_shakes(drop, count)`. Shake-Off only. Running total during and just after the game. Stored as `greatest(previous, min(count, floor(elapsed_seconds × max_shakes_per_second)))`, so a client can't report more than a human could shake.
-  - `submit_reaction(drop, round, reaction_ms?)`. Quick Draw only. The phone times the reaction itself (`performance.now()` from the frame that shows "DRAW!" to the flick), so network lag never counts; no `reaction_ms` = flicked before the signal. Under `min_reaction_ms` is stored as a false start. Refused: a round that doesn't exist or hasn't begun, a time outside 0..`max_reaction_ms`, a time the server's clock says couldn't have happened yet (`now < signal_at + reaction_ms − clock_tolerance_ms`), and anything after `signal_at + max_reaction_ms + submit_grace_seconds`.
-  - `submit_heading(drop, round, heading)`. Point to the Landmark only. The phone's locked true heading; the server stores the error `angle_diff(heading, bearing)` from the round's true bearing (`bearing_deg` from the **drop's** location to the landmark, not the phone's). Refused: a round that doesn't exist or hasn't begun, a heading outside [0, 360) or NaN, and anything after `point_seconds + submit_grace_seconds` into the round. First heading per round is final.
-  - `landmark_rounds(game)`: each round's landmark, a different seeded pick among `campus_landmarks` at least `min_landmark_m` from the drop (the farthest fill in if too few qualify), with its bearing.
-  - `submit_dodges(drop, count, eliminated?)`. Needle Rain only. Stored as `greatest(previous, min(count, floor(elapsed_seconds × max_dodges_per_second)))`. Once `eliminated` is stored, later reports return the frozen count. Broadcast positions are cosmetic.
-  - `submit_ghost(drop, count)`. Needle Rain practice, only while the round has not started. Caps at `game_seconds × max_dodges_per_second` and replaces the lobby record only when the new count is higher. Pays nothing and does not set `finished_at`.
-  - `finish_game(drop)`. Idempotent; any client calls it after `game_seconds + submit_grace_seconds` (per kind). `side_scores(drop, kind)` scores each side: Shake-Off, average shakes per player (higher wins, fair for uneven sides); Quick Draw, the average of each player's best valid time, with `max_reaction_ms` for a player who has none (lower wins); Point to the Landmark, the average of each player's mean error over all rounds, a round without a heading counting `miss_degrees` (lower wins). An exact tie goes to a seeded coin flip. Every winner on that side gets a claim worth the drop's points, and the drop is marked claimed. Needle Rain skips sides: the highest dodge count among players still standing wins (or among everyone if all are out). An exact tie uses the same seeded coin flip. Exactly one claim, for `winner_id`.
-  - `shake_off_settings()`: `game_seconds` 15, `auto_start_players` 4, `auto_start_delay_seconds` 15, `admin_start_delay_seconds` 5, `max_shakes_per_second` 8, `submit_grace_seconds` 3. `minigame_settings(kind)` adds each kind's own: Quick Draw `game_seconds` 30, `rounds` 3, `round_seconds` 10, signal 2000–6000 ms into each round (`quick_draw_signal_at(game, round)`, seeded), `min_reaction_ms` 100, `max_reaction_ms` 1500, `clock_tolerance_ms` 1000. Point to the Landmark `game_seconds` 42, `rounds` 3, `round_seconds` 14 (`point_seconds` 8, then the reveal), `steady_ms` 1000, `steady_degrees` 6, `lock_after_ms` 1500, `min_landmark_m` 200, `miss_degrees` 180. Needle Rain (`needle_rain_settings()`): `game_seconds` 40, `auto_start_players` 2, `auto_start_delay_seconds` 3, `admin_start_delay_seconds` 3, `max_dodges_per_second` 4, `submit_grace_seconds` 3. The client reads them from `get_game_state`; don't copy them into client code.
-  - `claim_drop` refuses `minigame` drops, so the game can't be skipped.
-- **Photo hunt functions:**
-  - `create_photo_hunt(p_title, p_lat, p_lng, p_hint_photo_url, p_twist, p_points?, p_building_num?, p_expires_at?) → drops`. Admin only. Saves the exact spot and building in `drop_secrets` and publishes the drop at a random point up to 3/4 of `search_radius_m` (125 m) away, so neither the row nor its Realtime insert reveals the spot. Client: `createPhotoHunt(...)`.
-  - `photo_hunt_check(drop, player, lat, lng) → drops` and `claim_photo_hunt(...) → claims`. **Service role only**, called by `web/api/verify-photo.ts`. The check raises a user-facing error unless the hunt is open, the player hasn't found it yet, and they're within `claim_radius_m()` of the exact spot. It never says how far off they are. The claim reruns the check under a row lock, then records points: full for the first finder, halved for each earlier finder, at least 1. The first find copies the exact spot and building onto the drop (the map's red pin and building highlight) and sets `expires_at` to 7 minutes later unless it was due sooner. The drop stays `active` until then.
-  - `current_player_id() → uuid`. The caller's player id, so `/api` functions can identify the caller from their JWT.
-  - `claim_drop` refuses `photo_hunt` drops, by GPS and by QR.
 - **Meetups and clearing:**
-  - `create_meetup(p_text, p_lat, p_lng, p_minutes = 60, p_building_num?) → drops`. Any joined player. Inserts a `meetup` drop titled with the trimmed text (3–80 characters), subtitle "Started by <name>", at the given position (must be within 5 km of Old Main), expiring after `p_minutes` clamped to 15–180. Posting again expires the player's previous live meetup, and a player can post at most 5 an hour. `points` is 1 only to satisfy the column check: `claim_drop` refuses meetups. Client: `createMeetup(...)`.
-  - `close_drop(p_drop_id)`. Admins may clear any drop; a player may end a meetup they started. Sets `status = 'expired'` (and `expires_at` to now), never deletes, so claims and points from the drop stay. Client: `closeDrop(dropId)`.
+  - `create_meetup(p_text, p_lat, p_lng, p_minutes = 60, p_building_num?) → drops`. Any joined player. Inserts a `meetup` drop titled with the trimmed text (3–80 characters), subtitle "Started by <name>", at the given position (must be within 5 km of Old Main), expiring after `p_minutes` clamped to 15–180. Posting again expires the player's previous live meetup, and a player can post at most 5 an hour. Client: `createMeetup(...)`.
+  - `close_drop(p_drop_id)`. Admins may clear any drop; a player may end a meetup they started. Sets `status = 'expired'` (and `expires_at` to now), never deletes, so the drop's check-ins stay. Client: `closeDrop(dropId)`.
 - **`discover_area(p_hex_id) → boolean`**. Records an area for the caller; `true` if new, `false` if they already had it (duplicates are ignored). Runs as the caller (`security invoker`), so the insert policy applies. The client calls it from `DiscoveryProvider` only on a GPS fix with accuracy ≤ 20 m inside one of the campus areas. Client: `discoverArea(hexId)`, `getDiscoveredAreas()`.
 - **Event RSVPs:**
   - `event_going(p_event_ids text[]) → (event_id, going, me)[]`. Each listed event's going count and whether the caller is going (first 100 ids; unknown ids are left out). Counts only. Client: `getGoing(eventId)`.
   - `set_going(p_event_id, p_going) → integer`. Turns the caller's RSVP on or off and returns the new count. Going is refused for an event that's over or cancelled (or unknown, or before joining); un-RSVPing always works. Client: `setGoing(eventId, going)`.
-- **`sync_discover_events(p_events jsonb, p_complete boolean) → { events, cancelled, drops_rescheduled, drops_closed }`**. **Service role only**, called by `/api/sync-events`. Upserts every listing in `p_events` (duplicate ids count once; `lat`/`lng` aren't stored). Only when `p_complete` (the fetch got every page) does an upcoming event missing from the batch become `cancelled`, so a truncated fetch never cancels anything. Seeded drops follow their event: an `active` drop gets the event's new `starts_at`/`expires_at`, and a cancelled event's active drop is closed like `close_drop` (`status = 'expired'`, never deleted, so its points stay). A drop that's already closed stays closed.
-- **`claim_radius_m() → meters`** (currently 60). This is the one place the GPS claim radius is defined. `claim_drop` uses it, and the client fetches it (`getClaimRadius()` / `useClaimRadius()`) to draw each drop's radius circle and to enable the Claim button. Change it here and both follow.
+- **Event check-ins and clubs** (`20261029010000_clubs.sql`):
+  - `check_in_event(p_event_id, p_lat?, p_lng?, p_code?) → boolean`. Checks the caller in to a campus event with its door QR code (any distance) or GPS within `claim_radius_m()` of its building. Open from 30 minutes before the start until the end. Refused: not joined, unknown, cancelled, too early, over, a wrong code, no position, too far, or GPS for an event with no building. `true` the first time, `false` if already in. Client: `checkInEvent(eventId, proof)`.
+  - `request_organizer(p_organization, p_note?) → organizer_requests`. "I run this club." The club must have events in `discover_events`. Asking again while a request waits returns it; an organizer can't ask again; at most 5 pending per player. Client: `requestOrganizer(organization, note)`.
+  - `decide_organizer_request(p_request_id, p_approve) → organizer_requests`. Admins only, pending requests only. Approving adds the `club_organizers` row. Client: `decideOrganizerRequest(id, approve)`.
+  - `runs_club(p_organization) → boolean`. The caller is an admin or an organizer of the club.
+  - `event_checkin_code(p_event_id) → text`. The event's door QR code, made on first use. Organizers of the event's club and admins only. Client: `getEventCheckinCode(eventId)`.
+  - `club_stats(p_organization) → jsonb`. Organizers of the club and admins only. `{ organization, events: [{ id, title, starts_at, ends_at, cancelled, location, building, going, checked_in }], attendees, returning, rsvps, checkins }`: events from the last 90 days and every upcoming one, newest first. `attendees` is players who checked in to any of the club's events, `returning` those who checked in to two or more (the second-visit rate is `returning / attendees`). **Counts only, never player ids or names.** Client: `getClubStats(organization)`.
+- **`sync_discover_events(p_events jsonb, p_complete boolean) → { events, cancelled, drops_rescheduled, drops_closed }`**. **Service role only**, called by `/api/sync-events`. Upserts every listing in `p_events` (duplicate ids count once; `lat`/`lng` aren't stored). Only when `p_complete` (the fetch got every page) does an upcoming event missing from the batch become `cancelled`, so a truncated fetch never cancels anything. Seeded drops follow their event: an `active` drop gets the event's new `starts_at`/`expires_at`, and a cancelled event's active drop is closed like `close_drop` (`status = 'expired'`, never deleted, so its check-ins stay). A drop that's already closed stays closed. Prunes events that ended over 30 days ago and that nobody RSVP'd or checked in to.
+- **`current_player_id() → uuid`**. The caller's player id, so `/api` functions can identify the caller from their JWT.
+- **`claim_radius_m() → meters`** (currently 60). This is the one place the GPS radius is defined. `claim_drop` and `check_in_event` use it, and the client fetches it (`getClaimRadius()` / `useClaimRadius()`) to draw each drop's circle and to enable the Check in buttons. Change it here and both follow.
 - **`distance_m(lat1, lng1, lat2, lng2) → meters`**. Haversine on a 6,371 km sphere. `web/src/lib/geo.ts` `distanceM` uses the identical formula, so the client's "in range" matches the server.
 - **`next_player_color() → text`**. Default for `players.color`.
 - **`is_admin() → boolean`**. Used by RLS. It's callable from the client too, but the app derives admin status from the session.
 
 ## Realtime
 
-`drops`, `claims`, `games`, `game_players`, and `game_results` are in the `supabase_realtime` publication. `subscribeToDrops(cb)` fires on every drop insert, update, or delete, which is enough to refresh the map. A photo hunt's later finders add claims without touching the drop, so the leaderboard listens to `claims`.
+`drops` and `claims` are in the `supabase_realtime` publication (so are the old game tables, unused). `subscribeToDrops(cb)` fires on every drop insert, update, or delete, which is enough to refresh the map.
 
 ## AI event search: `/api/search-events` and `search_quota`
 
@@ -229,18 +183,15 @@ The app links a result to a seeded drop by `drops.source_id = 'discover:<event i
 3. Leftovers with an in-person location (not Zoom, Teams, online, links...) are looked up in `discover_locations`. New ones (up to 120 per run) go to Gemini in one call with the buildings within 2.5 km of Old Main. Answers are checked against real building numbers, then cached, "none" included. If Gemini is down or `GEMINI_API_KEY` is unset, the sync goes ahead and asks about those locations next time.
 4. Calls `sync_discover_events(events, complete)` and returns a summary: `{ fetched, complete, placed: { text_or_pin, gemini, unplaced }, gemini, asked, events, cancelled, drops_rescheduled, drops_closed }`. A Discover or database failure returns 502 and is logged.
 
-## Photo hunts and `/api/verify-photo`
+## Club insights: `/api/club-insights`
 
-1. The player takes a photo. The client shrinks it to a 1280 px JPEG and POSTs `{ dropId, lat, lng, image }` (base64) to `/api/verify-photo` with their JWT as `Authorization: Bearer …` (`submitHuntPhoto`).
-2. The function resolves the player with `current_player_id()` under that JWT, then runs `photo_hunt_check` with the service key. Failures come back as `{ error }` with a 4xx status.
-3. It sends the reference photo, the player's photo, and the twist to Gemini, which answers `same_place`, `twist_done`, `photo_of_screen_or_print`, and a one-sentence `reason`. A busy or retired model is retried, then other models are tried (`GEMINI_ATTEMPTS`).
-4. On a match it calls `claim_photo_hunt` and returns `{ match: true, points, reason }`. Otherwise it returns `{ match: false, reason }`. Player photos are never stored.
+`POST /api/club-insights { organization }` (`web/api/club-insights.ts`, numbers in `web/api/_clubInsights.ts`) feeds the club dashboard's "Interested" count and "Next event ideas":
 
-The function needs `GEMINI_API_KEY` and `SUPABASE_SERVICE_ROLE_KEY`. `npm run dev` serves `web/api/*.ts` through a small Vite plugin in `vite.config.ts`, and Vercel serves them in production. `npm run test-gemini -- <reference> <photo> ["twist"]` tries the referee on two local photos without the database.
-
-### Broadcast: live Shake-Off counts
-
-Channel `shakeoff:<drop_id>`, event `shakes`, payload `{ playerId, count }`. Each participant sends about every 500 ms. It only drives the tug-of-war bar on phones and `/battle/:dropId`. The winner is decided solely from the capped counts stored by `submit_shakes`.
+1. The caller must be a signed-in player, and `club_stats` (called **as the caller**) must let them in, so only the club's organizers and admins get further. Otherwise 403.
+2. With the service key it reads the club's upcoming events, every `player_profiles` row (up to 5,000), those events' RSVPs, and campus events from 60 days ago to two weeks out with their check-in counts.
+3. **Interested** = distinct players who RSVP'd to an upcoming event or whose profile matches it (`matchEvent` from `web/src/lib/interests.ts`, the same as "For you"). Returned as counts per event and in total.
+4. **Suggestions**: `suggestSlots` scores each weekday at 12, 5, 6, 7 and 8 PM (State College time) by the club's own check-ins and RSVPs there, campus-wide check-ins, and how many other events already sit in that slot over the next two weeks (they split the audience), then picks three different days 2–14 days out, skipping dates the club already has an event, at the building where its events drew the most per event. With `GEMINI_API_KEY`, Gemini gets the same aggregated numbers (the club's own events, slot totals, the candidate buildings, the interested count; **nothing about any player**) and picks three; picks with an unknown weekday, an off-list hour, a repeated day, or no date in range are dropped, and an unknown building becomes no building. If no pick survives or Gemini fails, the numbers' picks are used.
+5. Returns `{ interested, interestedByEvent, suggestions: [{ starts_at, building | null, reason }], mode: 'ai' | 'stats' }`. The dashboard labels `stats` suggestions as coming from the numbers.
 
 ### Presence: live player locations
 

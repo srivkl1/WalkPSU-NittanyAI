@@ -39,7 +39,7 @@ function ProfilePage() {
       <div className="profile-head">
         <Avatar name={player.display_name} color={player.color} large />
         <h1>{player.display_name}</h1>
-        <span className="chip">{isAdmin ? 'Organizer' : 'Player'}</span>
+        <span className="chip">{isAdmin ? 'Admin' : 'Player'}</span>
       </div>
 
       {/* Remounts when the saved profile changes (first load, after saving), so the form starts from it. */}
@@ -87,7 +87,7 @@ function ProfilePage() {
         </button>
         {isAdmin && (
           <Link className="list-row" to="/admin">
-            <span className="list-row-main">Admin: drop events</span>
+            <span className="list-row-main">Admin: drops and organizers</span>
             <ChevronIcon className="chevron" />
           </Link>
         )}

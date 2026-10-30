@@ -2,7 +2,7 @@
 // Run from web/ with SUPABASE_SERVICE_ROLE_KEY in .env (never VITE_-prefixed; it bypasses RLS):
 //   npm run seed-events               pick and insert
 //   npm run seed-events -- --dry-run  show the picks, write nothing
-//   npm run seed-events -- --clear    delete every drop this script created (and their claims)
+//   npm run seed-events -- --clear    delete every drop this script created (and their check-ins)
 import { readFile } from 'node:fs/promises'
 import { createClient } from '@supabase/supabase-js'
 import { CAMPUS_CENTER } from '../src/lib/campus.ts'
@@ -13,8 +13,7 @@ const SOURCE = 'discover:'
 const COUNT = 12
 const WINDOW_MS = 48 * 3600_000
 const MAX_WINDOW_MS = 7 * 24 * 3600_000
-const POINTS = 15
-// We demo from ECoRE, so its drops would be claimed without walking anywhere.
+// We demo from ECoRE, so its drops would be checked in to without walking anywhere.
 const EXCLUDED_BUILDINGS = new Set(['0310000'])
 // Walkable from the middle of campus; Discover also lists events at the farms, the airport and downtown hotels.
 const MAX_FROM_CENTER_M = 2000
@@ -103,7 +102,6 @@ const rows = picks.map((e) => ({
   title: e.title,
   subtitle: e.organization,
   type: 'checkin',
-  points: POINTS,
   lat: e.building.lat,
   lng: e.building.lng,
   building_num: e.building.num,

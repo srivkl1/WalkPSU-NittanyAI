@@ -75,7 +75,7 @@ check('a complete fetch cancels the missing upcoming event', r.rows?.[0].s.cance
 check('and closes its drop', r.rows?.[0].s.drops_closed === 1, r)
 d = await dropFor('b')
 check('as expired, not deleted', d?.status === 'expired' && d.expires_at.getTime() <= Date.now() + 1000, d)
-check('so points already earned stay', (await su(`select count(*)::int as n from claims where drop_id = $1`, [dropB]))[0].n === 1)
+check('so check-ins already made stay', (await su(`select count(*)::int as n from claims where drop_id = $1`, [dropB]))[0].n === 1)
 check('the other event and its drop are untouched', (await eventRow('a')).cancelled === false && (await dropFor('a')).status === 'active')
 r = await as('p1', {}, `select id from discover_events where not cancelled order by id`)
 check('players see which events are cancelled', JSON.stringify(r.rows?.map((x) => x.id)) === '["a","c"]', r)

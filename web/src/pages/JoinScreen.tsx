@@ -48,7 +48,7 @@ function JoinScreen() {
   if (session.status === 'signed-out') {
     return (
       <div className="onboard">
-        <Hero subtitle="Race across campus to claim drops and win Shake-Offs." />
+        <Hero subtitle="See what’s on across campus, check in when you get there, and help your club grow." />
         <div className="onboard-actions">
           <button className="button primary" disabled={busy} onClick={() => void runAuth(session.signUp ?? session.signIn)}>
             Create an account

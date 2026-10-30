@@ -1,4 +1,4 @@
-// Player meetups (a social pin, no points) and close_drop (admins clear any drop; players end their own meetup).
+// Player meetups (a social pin, nothing to check in to) and close_drop (admins clear any drop; players end their own meetup).
 import { LAT, LNG, actor, check, createDb, finish, migrate, superuser } from './harness.mjs'
 
 const db = await createDb()
@@ -45,13 +45,13 @@ await meetup('p1', 'Number five')
 r = await meetup('p1', 'Number six')
 check('at most 5 meetups an hour', /lot of meetups/.test(r.error ?? ''), r)
 
-// --- No points
+// --- Nothing to check in to
 const live = (await su(`select id from drops where type = 'meetup' and status = 'active' and created_by = (select id from players where auth_id = 'p1')`))[0].id
 r = await as('p2', {}, `select * from claim_drop($1, $2, $3)`, [live, LAT, LNG])
-check('meetups can’t be claimed for points', /not for points/.test(r.error ?? ''), r)
+check('nobody checks in to a meetup', /nothing to check in to/.test(r.error ?? ''), r)
 const code = (await su(`select claim_code from drop_secrets where drop_id = $1`, [live]))[0].claim_code
 r = await as('p2', {}, `select * from claim_drop($1, null, null, $2)`, [live, code])
-check('not even by QR', /not for points/.test(r.error ?? ''), r)
+check('not even by QR', /nothing to check in to/.test(r.error ?? ''), r)
 
 // --- Direct inserts are still admin-only
 r = await as('p2', {}, `insert into drops (title, type, lat, lng) values ('sneaky', 'meetup', $1, $2)`, [LAT, LNG])
@@ -72,8 +72,8 @@ r = await admin(`select close_drop($1)`, [checkin2])
 const cleared = await dropRow(checkin2)
 check('an admin can clear any drop', !r.error && cleared.status === 'expired' && Date.parse(cleared.expires_at) <= Date.now() + 1000, r)
 r = await admin(`select close_drop($1)`, [checkin])
-const score = (await as('p2', {}, `select points from player_scores where display_name = 'p2'`)).rows[0].points
-check('clearing a claimed drop keeps the points it awarded', !r.error && score === 15, { r, score })
+const kept = (await su(`select count(*)::int as n from claims where drop_id = $1`, [checkin]))[0].n
+check('clearing a drop keeps its check-ins', !r.error && kept === 1, { r, kept })
 r = await as('p1', {}, `select close_drop('00000000-0000-0000-0000-000000000000')`)
 check('unknown drop', /not found/.test(r.error ?? ''), r)
 r = await db.exec('reset role').then(() => db.exec('set role anon')).then(() => db.query(`select close_drop($1)`, [checkin])).catch((e) => ({ error: e.message }))

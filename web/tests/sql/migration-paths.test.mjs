@@ -11,6 +11,8 @@ const NEEDLE = MIGRATIONS.find((m) => m.includes('needle_rain'))
 const beforeNeedle = MIGRATIONS[MIGRATIONS.indexOf(NEEDLE) - 1]
 const QUICK_DRAW = MIGRATIONS.find((m) => m.includes('quick_draw'))
 const beforeQuickDraw = MIGRATIONS[MIGRATIONS.indexOf(QUICK_DRAW) - 1]
+const REMOVE_GAMES = MIGRATIONS.find((m) => m.includes('remove_games_and_points'))
+const beforeRemoveGames = MIGRATIONS[MIGRATIONS.indexOf(REMOVE_GAMES) - 1]
 
 // --- Teams → individual players
 {
@@ -106,6 +108,30 @@ const beforeQuickDraw = MIGRATIONS[MIGRATIONS.indexOf(QUICK_DRAW) - 1]
   await migrate(db, { from: NEEDLE, until: NEEDLE })
   const kinds = await su(`select id, game from drops`)
   check('Needle Rain leaves existing games as they were', kinds.find((d) => d.id === shake).game === 'shake_off' && kinds.find((d) => d.id === draw).game === 'quick_draw' && kinds.find((d) => d.id === plain).game === null, kinds)
+}
+
+// --- Mini-games, photo hunts and points removed: live games close, live check-ins reopen, nothing is deleted.
+{
+  const db = await createDb()
+  await migrate(db, { until: beforeRemoveGames })
+  const as = actor(db)
+  const su = superuser(db)
+  const admin = (q, p) => as('admin', { app_role: 'admin' }, q, p)
+  for (const n of ['a', 'b']) await as(n, {}, `insert into players (display_name) values ($1)`, [n])
+  const game = (await admin(`insert into drops (title, type, lat, lng, points) values ('g', 'minigame', $1, $2, 30) returning id`, [LAT, LNG])).rows[0].id
+  const hunt = (await admin(`select (create_photo_hunt('h', $1, $2, 'x.jpg', 'with a thumbs up')).id`, [LAT, LNG])).rows[0].id
+  const live = (await admin(`insert into drops (title, type, lat, lng, expires_at) values ('live', 'checkin', $1, $2, now() + interval '2 hours') returning id`, [LAT, LNG])).rows[0].id
+  const forever = (await admin(`insert into drops (title, type, lat, lng) values ('old demo', 'checkin', $1, $2) returning id`, [LAT, LNG])).rows[0].id
+  for (const id of [live, forever]) await as('a', {}, `select claim_drop($1, $2, $3)`, [id, LAT, LNG])
+
+  await migrate(db, { from: REMOVE_GAMES, until: REMOVE_GAMES })
+  const status = Object.fromEntries((await su(`select id, status from drops`)).map((d) => [d.id, d.status]))
+  check('live games and hunts close', status[game] === 'expired' && status[hunt] === 'expired', status)
+  check('a claimed check-in that hasn’t ended reopens for everyone', status[live] === 'active', status)
+  check('one with no end time stays closed, so old demo drops don’t come back', status[forever] === 'claimed', status)
+  check('every old claim is kept', (await su(`select count(*)::int as n from claims`))[0].n === 2)
+  check('and the game tables stay', (await su(`select to_regclass('public.games') as t`))[0].t !== null)
+  check('player b can now check in where a already did', !(await as('b', {}, `select claim_drop($1, $2, $3)`, [live, LAT, LNG])).error)
 }
 
 finish()

@@ -4,13 +4,10 @@ import { DROP_ACCENT, DROP_TYPES, EVENT_THEMES } from '../lib/campus'
 
 type Props = { open: boolean; onOpenChange: (open: boolean) => void }
 
-/** Drop pins, matching MapPage's colors. A found photo hunt turns into a red pin. */
+/** Drop pins, matching MapPage's colors. */
 const DROPS = [
-  { color: DROP_TYPES.checkin.color, label: 'Check-in', hint: 'Walk there (or scan its QR) for points' },
-  { color: DROP_TYPES.minigame.color, label: 'Mini-game', hint: 'Join the lobby, then play for points' },
-  { color: DROP_TYPES.photo_hunt.color, label: 'Photo hunt', hint: 'Find the spot in the pink circle' },
-  { color: '#dc2626', label: 'Photo hunt, found', hint: 'Later finders get fewer points' },
-  { color: DROP_TYPES.meetup.color, label: 'Meetup', hint: 'Players hanging out. No points' },
+  { color: DROP_TYPES.checkin.color, label: 'Check-in', hint: 'Walk there (or scan its QR) to check in' },
+  { color: DROP_TYPES.meetup.color, label: 'Meetup', hint: 'Players hanging out right now' },
 ]
 
 /** What the map's colors mean. Modal: a quick look, then back to the map. */
@@ -30,7 +27,7 @@ function MapKeySheet({ open, onOpenChange }: Props) {
                 <KeyRow key={t.label} swatch={<span className="key-pin" style={{ '--swatch': t.color } as CSSProperties} />} label={t.label} hint={t.hint} />
               ))}
             </KeySection>
-            <KeySection title="Game drops" note="Bigger pins, drawn on top of events.">
+            <KeySection title="Drops" note="Bigger pins, drawn on top of events.">
               {DROPS.map((d) => (
                 <KeyRow key={d.label} swatch={<span className="key-pin is-drop" style={{ '--swatch': d.color } as CSSProperties} />} label={d.label} hint={d.hint} />
               ))}
